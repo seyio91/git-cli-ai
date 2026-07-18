@@ -264,6 +264,64 @@ func TestSC15_ContextOnlyEmitsRequestWithoutCallingOrCommitting(t *testing.T) {
 	}
 }
 
+// SC-15 — --context-only is an inspection mode: it never commits, whatever the
+// message situation. A conforming --message short-circuits the generator, which
+// must not also short-circuit the flag.
+func TestSC15_ContextOnlyNeverCommitsEvenWithAConformingMessage(t *testing.T) {
+	repo := newRepo(t)
+	fake, log := writeFakeProvider(t, repo, "fake-provider", "echo 'feat(api): should never run'")
+	writeRepoConfig(t, repo, cliProviderConfig(fake))
+	writeFile(t, repo, "a.txt", "a\n")
+	mustGit(t, repo, "add", "a.txt")
+
+	before := commitCount(t, repo)
+	res := run(t, repo, "commit", "--context-only", "--message", "feat(x): a conforming message", "--json")
+	if res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+	}
+	if after := commitCount(t, repo); after != before {
+		t.Fatalf("--context-only created a commit: %s -> %s", before, after)
+	}
+	if calls := providerCalls(t, log); calls != 0 {
+		t.Fatalf("provider called %d times under --context-only, want 0", calls)
+	}
+
+	var payload struct {
+		Diff   string `json:"diff"`
+		Intent string `json:"intent"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &payload); err != nil {
+		t.Fatalf("stdout is not a GenRequest payload (%v): %q", err, res.stdout)
+	}
+	if payload.Diff == "" {
+		t.Fatalf("GenRequest carried no diff: %q", res.stdout)
+	}
+	if payload.Intent != "feat(x): a conforming message" {
+		t.Fatalf("GenRequest intent = %q, want the supplied message", payload.Intent)
+	}
+}
+
+// SC-15 — an inspection mode must not mutate the index, so --context-only does
+// not stage even when --all is passed.
+func TestSC15_ContextOnlyWithAllDoesNotStage(t *testing.T) {
+	repo := newRepo(t)
+	fake, _ := writeFakeProvider(t, repo, "fake-provider", "echo 'feat(api): should never run'")
+	writeRepoConfig(t, repo, cliProviderConfig(fake))
+	writeFile(t, repo, "a.txt", "a\n")
+	mustGit(t, repo, "add", "a.txt")
+	writeFile(t, repo, "seed.txt", "modified after the seed commit\n")
+
+	res := run(t, repo, "commit", "--context-only", "--all", "--json")
+	if res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+	}
+
+	staged := strings.TrimSpace(mustGit(t, repo, "diff", "--cached", "--name-only"))
+	if strings.Contains(staged, "seed.txt") {
+		t.Fatalf("--context-only --all staged a tracked modification: %q", staged)
+	}
+}
+
 // SC-14 — the provider is selected by config alone; switching profiles switches
 // which one runs, with no flag and no rebuild.
 func TestSC14_ProviderSwappableByConfigAlone(t *testing.T) {
