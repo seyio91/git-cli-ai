@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	appconfig "github.com/seyio91/git-cli-ai/internal/config"
 	"github.com/seyio91/git-cli-ai/internal/git"
 	"github.com/spf13/cobra"
 )
@@ -87,6 +88,7 @@ func NewRootCommand(opts *Options, out io.Writer, errOut io.Writer) *cobra.Comma
 	cmd.PersistentFlags().BoolVar(&opts.JSON, "json", false, "emit JSON output")
 	cmd.PersistentFlags().BoolVar(&opts.DryRun, "dry-run", false, "preview without mutating")
 	cmd.AddCommand(NewCommitCommand(opts, out))
+	cmd.AddCommand(NewConfigCommand(opts, out))
 
 	return cmd
 }
@@ -120,6 +122,11 @@ func describeError(err error) failure {
 	var ae appError
 	if errors.As(err, &ae) {
 		return failure{message: ae.message, hint: ae.hint}
+	}
+
+	var ce *appconfig.LoadError
+	if errors.As(err, &ce) {
+		return failure{message: ce.Message, hint: ce.Hint, details: ce.Details}
 	}
 
 	if errors.Is(err, git.ErrDetachedHead) {

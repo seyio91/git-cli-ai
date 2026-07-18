@@ -70,6 +70,9 @@ func (r result) payload(t *testing.T) struct {
 func hermeticEnv(home string) []string {
 	return append(os.Environ(),
 		"HOME="+home,
+		// Pin the XDG root inside the throwaway repo so the tool's global
+		// config never resolves to the developer's real ~/.config.
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".xdg"),
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_SYSTEM=/dev/null",
 		"GIT_AUTHOR_NAME=test",
@@ -120,6 +123,40 @@ func run(t *testing.T, repo string, args ...string) result {
 	return result{stdout: stdout.String(), stderr: stderr.String(), exitCode: code}
 }
 
+// runWithoutXDG drops XDG_CONFIG_HOME so the global-config lookup exercises its
+// ~/.config fallback branch.
+func runWithoutXDG(t *testing.T, repo string, args ...string) result {
+	t.Helper()
+
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = repo
+
+	env := make([]string, 0, len(hermeticEnv(repo)))
+	for _, entry := range hermeticEnv(repo) {
+		if strings.HasPrefix(entry, "XDG_CONFIG_HOME=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	cmd.Env = env
+
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("running %v: %v", args, err)
+		}
+		code = exitErr.ExitCode()
+	}
+
+	return result{stdout: stdout.String(), stderr: stderr.String(), exitCode: code}
+}
+
 func mustGit(t *testing.T, repo string, args ...string) string {
 	t.Helper()
 
@@ -143,6 +180,66 @@ func writeFile(t *testing.T, repo string, name string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeFileAt(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// configPayload is the shape `git-cli config --json` emits: the resolved
+// configuration plus, for each dotted key, the layer that supplied its value.
+type configPayload struct {
+	Config  map[string]any    `json:"config"`
+	Sources map[string]string `json:"sources"`
+}
+
+func decodeConfig(t *testing.T, r result) configPayload {
+	t.Helper()
+	var p configPayload
+	if err := json.Unmarshal([]byte(r.stdout), &p); err != nil {
+		t.Fatalf("stdout is not a config payload (%v): %q", err, r.stdout)
+	}
+	return p
+}
+
+// configValue walks a dotted path through the resolved config tree.
+func configValue(t *testing.T, r result, path string) string {
+	t.Helper()
+
+	var current any = decodeConfig(t, r).Config
+	for _, segment := range strings.Split(path, ".") {
+		block, ok := current.(map[string]any)
+		if !ok {
+			t.Fatalf("config path %q: %q is not a table", path, segment)
+		}
+		current, ok = block[segment]
+		if !ok {
+			t.Fatalf("config path %q not present in %q", path, r.stdout)
+		}
+	}
+
+	value, ok := current.(string)
+	if !ok {
+		t.Fatalf("config path %q is not a string: %#v", path, current)
+	}
+	return value
+}
+
+func configSource(t *testing.T, r result, path string) string {
+	t.Helper()
+
+	sources := decodeConfig(t, r).Sources
+	source, ok := sources[path]
+	if !ok {
+		t.Fatalf("no provenance recorded for %q; have %#v", path, sources)
+	}
+	return source
 }
 
 func removeFile(t *testing.T, repo string, name string) {
