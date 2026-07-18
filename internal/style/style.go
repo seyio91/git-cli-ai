@@ -24,6 +24,10 @@ type Result struct {
 
 type Validator interface {
 	Validate(message string) Result
+	// Rules states the same contract Validate enforces, in the form a
+	// generator is prompted with. It is fixed per style so it can head a
+	// prompt as a stable, cacheable prefix.
+	Rules() string
 }
 
 // For returns the validator for a resolved commit.style value. Config already
@@ -48,6 +52,21 @@ func (conventionalStyle) Validate(message string) Result {
 	result := conventional.Validate(message)
 	return Result{Valid: result.Valid, Reason: result.Reason}
 }
+
+func (conventionalStyle) Rules() string {
+	return `Style: conventional-commits
+The header is a single line of the form "type(scope): subject".
+- type is lowercase letters, digits and hyphens, starting with a letter
+- (scope) is optional and contains only letters, digits, '.', '_', '/' or '-'
+- append '!' immediately before the colon to mark a breaking change
+- the colon is followed by exactly one space and a non-empty subject
+An optional body may follow, separated from the header by one blank line.` + sharedRules
+}
+
+// sharedRules holds the parts every style states identically, so the three
+// blocks cannot drift apart on the things that are not style-specific.
+const sharedRules = `
+Write the subject in the imperative mood and do not end it with a period.`
 
 // splitHeader separates the header from an optional body and enforces the rule
 // shared by every style: a body must be preceded by a blank line.

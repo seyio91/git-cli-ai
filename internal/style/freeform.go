@@ -14,6 +14,13 @@ const freeformExpected = "a subject of at most 72 characters with no trailing pe
 
 type freeformStyle struct{}
 
+func (freeformStyle) Rules() string {
+	return `Style: freeform-with-rules
+The header is a single line of at most 72 characters, non-empty, with no leading
+whitespace and no trailing period. There is no required prefix.
+An optional body may follow, separated from the header by one blank line.` + sharedRules
+}
+
 func (freeformStyle) Validate(message string) Result {
 	header, result := splitHeader(message)
 	if !result.Valid {

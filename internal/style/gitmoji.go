@@ -48,6 +48,16 @@ func (gitmojiStyle) Validate(message string) Result {
 	return Result{Valid: true}
 }
 
+func (gitmojiStyle) Rules() string {
+	return `Style: gitmoji
+The header is a single line beginning with an emoji token, then one space, then
+a non-empty subject. The token is either a :shortcode: (lowercase letters,
+digits, '_', '+' or '-' between colons) or a literal emoji character.
+If the subject itself carries a "type(scope): " prefix, that prefix must satisfy
+the Conventional Commits rules.
+An optional body may follow, separated from the header by one blank line.` + sharedRules
+}
+
 // isEmojiToken accepts a :shortcode: or a run of non-ASCII runes. The latter is
 // deliberately loose: emoji are multi-rune sequences (skin tones, ZWJ joins,
 // variation selectors) and enumerating them would date badly, so any token that

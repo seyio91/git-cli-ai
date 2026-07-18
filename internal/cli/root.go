@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/seyio91/git-cli-ai/internal/ai"
 	appconfig "github.com/seyio91/git-cli-ai/internal/config"
 	"github.com/seyio91/git-cli-ai/internal/git"
 	"github.com/spf13/cobra"
@@ -21,6 +22,7 @@ type Options struct {
 type appError struct {
 	message string
 	hint    string
+	details string
 }
 
 // errorPayload is the agent-facing error contract. hint is always actionable
@@ -97,6 +99,12 @@ func fail(message string, hint string) error {
 	return appError{message: message, hint: hint}
 }
 
+// failWithDetails is fail for the cases that must show the offending value —
+// the hint stays actionable guidance, the value goes in details.
+func failWithDetails(message string, hint string, details string) error {
+	return appError{message: message, hint: hint, details: details}
+}
+
 func writeError(opts *Options, out io.Writer, errOut io.Writer, err error) {
 	f := describeError(err)
 	if opts.JSON {
@@ -121,12 +129,17 @@ func writeError(opts *Options, out io.Writer, errOut io.Writer, err error) {
 func describeError(err error) failure {
 	var ae appError
 	if errors.As(err, &ae) {
-		return failure{message: ae.message, hint: ae.hint}
+		return failure{message: ae.message, hint: ae.hint, details: ae.details}
 	}
 
 	var ce *appconfig.LoadError
 	if errors.As(err, &ce) {
 		return failure{message: ce.Message, hint: ce.Hint, details: ce.Details}
+	}
+
+	var pe *ai.ProviderError
+	if errors.As(err, &pe) {
+		return failure{message: pe.Message, hint: pe.Hint, details: pe.Details}
 	}
 
 	if errors.Is(err, git.ErrDetachedHead) {
