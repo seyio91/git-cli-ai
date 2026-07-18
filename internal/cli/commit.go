@@ -7,8 +7,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/seyio91/git-cli-ai/internal/conventional"
+	appconfig "github.com/seyio91/git-cli-ai/internal/config"
 	gitrepo "github.com/seyio91/git-cli-ai/internal/git"
+	"github.com/seyio91/git-cli-ai/internal/style"
 	"github.com/spf13/cobra"
 )
 
@@ -40,12 +41,23 @@ func NewCommitCommand(root *Options, out io.Writer) *cobra.Command {
 }
 
 func runCommit(ctx context.Context, root *Options, opts *commitOptions, out io.Writer) error {
-	if opts.message == "" {
-		return fail("--message is required", "Phase 1 does not generate messages; supply a conforming Conventional Commits message.")
+	resolved, err := appconfig.Load(ctx, "")
+	if err != nil {
+		return err
 	}
 
-	if result := conventional.Validate(opts.message); !result.Valid {
-		return fail("commit message does not conform to Conventional Commits: "+result.Reason, "supply a conforming message or configure a provider")
+	commitStyle := resolved.Config.Commit.Style
+	validator, styleErr := style.For(commitStyle)
+	if styleErr != nil {
+		return fail(styleErr.Error(), "set commit.style to conventional-commits, gitmoji, or freeform-with-rules")
+	}
+
+	if opts.message == "" {
+		return fail("--message is required", fmt.Sprintf("no message generator is configured yet; supply a message conforming to %s.", commitStyle))
+	}
+
+	if result := validator.Validate(opts.message); !result.Valid {
+		return fail(fmt.Sprintf("commit message does not conform to %s: %s", commitStyle, result.Reason), "supply a conforming message or configure a provider")
 	}
 
 	repo := gitrepo.New("")

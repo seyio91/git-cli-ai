@@ -85,7 +85,9 @@ func TestSC08_NonConformingMessageErrorsWithGuidance(t *testing.T) {
 		t.Fatal("expected nonzero exit")
 	}
 	p := res.payload(t)
-	if !strings.Contains(p.Error, "Conventional Commits") {
+	// The error names the active style by its config id, so the message tells
+	// the reader which commit.style value produced the rejection.
+	if !strings.Contains(p.Error, "conventional-commits") {
 		t.Fatalf("error = %q, want it to name the format", p.Error)
 	}
 	if p.Hint == "" {
