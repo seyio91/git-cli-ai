@@ -11,6 +11,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	// The binary is built at runtime by TestMain, which is invisible to the
+	// test cache: without this import the code under test is not in this
+	// package's dependency graph, so `go test ./...` replays a cached PASS
+	// after the implementation changes. Blank-importing the root command pulls
+	// in cli, config, style, git and conventional, so a change to any of them
+	// invalidates the cache. Verified by mutation: with this import removed, a
+	// deliberately broken commit path still reported `ok (cached)`.
+	_ "github.com/seyio91/git-cli-ai/internal/cli"
 )
 
 var binary string
