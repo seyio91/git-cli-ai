@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/seyio91/git-cli-ai/internal/git"
 	"github.com/spf13/cobra"
@@ -21,9 +22,21 @@ type appError struct {
 	hint    string
 }
 
+// errorPayload is the agent-facing error contract. hint is always actionable
+// guidance; git's own words go in details so the hint is never a bare stderr
+// dump.
 type errorPayload struct {
-	Error string `json:"error"`
-	Hint  string `json:"hint,omitempty"`
+	Error       string `json:"error"`
+	Hint        string `json:"hint,omitempty"`
+	Details     string `json:"details,omitempty"`
+	GitExitCode int    `json:"git_exit_code,omitempty"`
+}
+
+type failure struct {
+	message     string
+	hint        string
+	details     string
+	gitExitCode int
 }
 
 func (e appError) Error() string {
@@ -34,10 +47,33 @@ func Execute() {
 	opts := &Options{}
 	cmd := NewRootCommand(opts, os.Stdout, os.Stderr)
 
+	// Seed from a raw scan of argv. Registering the flag resets opts.JSON to
+	// its default, and a flag-parse failure aborts before cobra ever populates
+	// it — so without this, malformed input degrades to text output and an
+	// agent parsing stdout as JSON sees nothing. A successful parse overwrites
+	// this with the real value.
+	opts.JSON = wantsJSON(os.Args[1:])
+
 	if err := cmd.Execute(); err != nil {
 		writeError(opts, os.Stdout, os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func wantsJSON(args []string) bool {
+	found := false
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		switch arg {
+		case "--json", "--json=true":
+			found = true
+		case "--json=false":
+			found = false
+		}
+	}
+	return found
 }
 
 func NewRootCommand(opts *Options, out io.Writer, errOut io.Writer) *cobra.Command {
@@ -60,32 +96,72 @@ func fail(message string, hint string) error {
 }
 
 func writeError(opts *Options, out io.Writer, errOut io.Writer, err error) {
-	message, hint := describeError(err)
+	f := describeError(err)
 	if opts.JSON {
-		_ = json.NewEncoder(out).Encode(errorPayload{Error: message, Hint: hint})
+		_ = json.NewEncoder(out).Encode(errorPayload{
+			Error:       f.message,
+			Hint:        f.hint,
+			Details:     f.details,
+			GitExitCode: f.gitExitCode,
+		})
 		return
 	}
 
-	_, _ = fmt.Fprintf(errOut, "Error: %s\n", message)
-	if hint != "" {
-		_, _ = fmt.Fprintf(errOut, "Hint: %s\n", hint)
+	_, _ = fmt.Fprintf(errOut, "Error: %s\n", f.message)
+	if f.hint != "" {
+		_, _ = fmt.Fprintf(errOut, "Hint: %s\n", f.hint)
+	}
+	if f.details != "" {
+		_, _ = fmt.Fprintf(errOut, "Details: %s\n", f.details)
 	}
 }
 
-func describeError(err error) (string, string) {
+func describeError(err error) failure {
 	var ae appError
 	if errors.As(err, &ae) {
-		return ae.message, ae.hint
+		return failure{message: ae.message, hint: ae.hint}
+	}
+
+	if errors.Is(err, git.ErrDetachedHead) {
+		return failure{
+			message: "HEAD is not on a named branch",
+			hint:    "check out a branch with `git checkout -b <name>` before committing",
+		}
 	}
 
 	var ge *git.CommandError
 	if errors.As(err, &ge) {
-		hint := ge.Stderr
-		if hint == "" {
-			hint = "ensure git is installed and the current directory is a git repository"
+		return failure{
+			message:     fmt.Sprintf("git command failed: git %s", ge.ArgString()),
+			hint:        gitHint(ge),
+			details:     ge.Stderr,
+			gitExitCode: ge.ExitCode,
 		}
-		return fmt.Sprintf("git command failed: git %s", ge.ArgString()), hint
 	}
 
-	return err.Error(), ""
+	return failure{message: err.Error()}
+}
+
+// gitHint maps a git failure to actionable guidance. The plan requires that the
+// agent path never receive a bare stderr dump as its hint; the raw text is
+// still available in the details field.
+func gitHint(ge *git.CommandError) string {
+	stderr := strings.ToLower(ge.Stderr)
+
+	switch {
+	case ge.ExitCode < 0:
+		return "git could not be executed; ensure it is installed and on PATH"
+	case strings.Contains(stderr, "not a git repository"):
+		return "run this inside a git repository, or initialise one with `git init`"
+	case strings.Contains(stderr, "index.lock"):
+		return "another git process may be holding .git/index.lock, or the repository is not writable; remove the lock if it is stale"
+	case strings.Contains(stderr, "permission denied"), strings.Contains(stderr, "operation not permitted"):
+		return "git could not write to the repository; check the file permissions on .git"
+	case strings.Contains(stderr, "please tell me who you are"), strings.Contains(stderr, "empty ident"):
+		return "set a commit identity with `git config user.name` and `git config user.email`"
+	case strings.Contains(stderr, "no upstream"), strings.Contains(stderr, "no such remote"):
+		return "set an upstream with `git push -u <remote> <branch>`"
+	}
+
+	return "run the same git command manually to see its full output"
 }

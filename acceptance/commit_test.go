@@ -268,6 +268,67 @@ func TestSC06_GitFailureIsStructured(t *testing.T) {
 	}
 }
 
+// SC-06 — a git-level failure yields an actionable hint, with git's own words
+// confined to details. The plan forbids bare stderr dumps on the agent path.
+func TestSC06_GitFailureHintIsActionableNotAStderrDump(t *testing.T) {
+	dir := t.TempDir() // deliberately not a git repository
+
+	res := run(t, dir, "commit", "--message", "feat(x): thing", "--json")
+	if res.exitCode == 0 {
+		t.Fatal("expected nonzero exit outside a git repository")
+	}
+
+	p := res.payload(t)
+	if p.Hint == "" {
+		t.Fatal("expected a hint")
+	}
+	if strings.Contains(p.Hint, "fatal:") {
+		t.Fatalf("hint is a raw stderr dump: %q", p.Hint)
+	}
+	if p.Hint == p.Details {
+		t.Fatal("hint must be guidance, not a copy of details")
+	}
+	if !strings.Contains(p.Details, "not a git repository") {
+		t.Fatalf("details = %q, want git's own words preserved", p.Details)
+	}
+	if p.GitExitCode == 0 {
+		t.Fatal("expected the git exit code to be surfaced")
+	}
+}
+
+// SC-06 — a flag-parse failure happens before cobra populates --json, but the
+// error must still be reported as JSON for the agent path.
+func TestSC06_FlagParseFailureStillEmitsJSON(t *testing.T) {
+	repo := newRepo(t)
+
+	res := run(t, repo, "commit", "--bogus-flag", "--json")
+	if res.exitCode == 0 {
+		t.Fatal("expected nonzero exit for an unknown flag")
+	}
+	if res.stdout == "" {
+		t.Fatalf("expected JSON on stdout, got stderr: %q", res.stderr)
+	}
+	if p := res.payload(t); p.Error == "" {
+		t.Fatalf("expected a structured error, got %q", res.stdout)
+	}
+}
+
+// SC-06 — without --json the same failure stays human-readable on stderr.
+func TestSC06_FlagParseFailureWithoutJSONStaysText(t *testing.T) {
+	repo := newRepo(t)
+
+	res := run(t, repo, "commit", "--bogus-flag")
+	if res.exitCode == 0 {
+		t.Fatal("expected nonzero exit for an unknown flag")
+	}
+	if !strings.Contains(res.stderr, "bogus-flag") {
+		t.Fatalf("stderr = %q, want it to name the offending flag", res.stderr)
+	}
+	if strings.Contains(res.stdout, "{") {
+		t.Fatalf("stdout = %q, want no JSON when --json was not requested", res.stdout)
+	}
+}
+
 // SC-02 — pathological filenames survive verbatim.
 func TestSC02_PathologicalPathsSurviveVerbatim(t *testing.T) {
 	repo := newRepo(t)

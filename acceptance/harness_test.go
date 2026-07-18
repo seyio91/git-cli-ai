@@ -41,19 +41,23 @@ type result struct {
 // error shapes are decoded into one struct so a test can assert on whichever
 // fields apply.
 func (r result) payload(t *testing.T) struct {
-	Message string   `json:"message"`
-	Files   []string `json:"files"`
-	DryRun  bool     `json:"dry_run"`
-	Error   string   `json:"error"`
-	Hint    string   `json:"hint"`
+	Message     string   `json:"message"`
+	Files       []string `json:"files"`
+	DryRun      bool     `json:"dry_run"`
+	Error       string   `json:"error"`
+	Hint        string   `json:"hint"`
+	Details     string   `json:"details"`
+	GitExitCode int      `json:"git_exit_code"`
 } {
 	t.Helper()
 	var p struct {
-		Message string   `json:"message"`
-		Files   []string `json:"files"`
-		DryRun  bool     `json:"dry_run"`
-		Error   string   `json:"error"`
-		Hint    string   `json:"hint"`
+		Message     string   `json:"message"`
+		Files       []string `json:"files"`
+		DryRun      bool     `json:"dry_run"`
+		Error       string   `json:"error"`
+		Hint        string   `json:"hint"`
+		Details     string   `json:"details"`
+		GitExitCode int      `json:"git_exit_code"`
 	}
 	if err := json.Unmarshal([]byte(r.stdout), &p); err != nil {
 		t.Fatalf("stdout is not valid JSON (%v): %q", err, r.stdout)

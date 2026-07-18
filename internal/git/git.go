@@ -15,9 +15,16 @@ type Repository struct {
 	Binary string
 }
 
+// ErrDetachedHead reports that HEAD does not point at a named branch. git
+// itself succeeds in that case and simply prints nothing, so this is a
+// condition rather than a command failure and is deliberately not a
+// *CommandError.
+var ErrDetachedHead = errors.New("HEAD is not on a named branch")
+
 type CommandError struct {
 	Args     []string
 	ExitCode int
+	Stdout   string
 	Stderr   string
 	Err      error
 }
@@ -99,7 +106,7 @@ func (r Repository) CurrentBranch(ctx context.Context) (string, error) {
 	}
 	branch := strings.TrimSpace(out)
 	if branch == "" {
-		return "", errors.New("current branch is detached or unavailable")
+		return "", ErrDetachedHead
 	}
 	return branch, nil
 }
@@ -177,6 +184,9 @@ func (e *CommandError) Error() string {
 	if e.Stderr != "" {
 		return fmt.Sprintf("git %s failed: %s", e.ArgString(), e.Stderr)
 	}
+	if e.ExitCode > 0 {
+		return fmt.Sprintf("git %s failed with exit code %d", e.ArgString(), e.ExitCode)
+	}
 	if e.Err != nil {
 		return fmt.Sprintf("git %s failed: %v", e.ArgString(), e.Err)
 	}
@@ -213,9 +223,12 @@ func (r Repository) run(ctx context.Context, args ...string) (string, error) {
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
-		return "", &CommandError{
+		// stdout is returned alongside the error: some git commands write
+		// useful context there even when they exit nonzero.
+		return stdout.String(), &CommandError{
 			Args:     args,
 			ExitCode: exitCode,
+			Stdout:   strings.TrimSpace(stdout.String()),
 			Stderr:   strings.TrimSpace(stderr.String()),
 			Err:      err,
 		}
