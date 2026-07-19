@@ -59,7 +59,13 @@ func New(cfg appconfig.Config) (Generator, error) {
 				Hint:     fmt.Sprintf("set base_url in [ai.providers.%s] to the API root, for example base_url = \"https://api.example.com/v1\"", name),
 			}
 		}
-		return openAIGenerator{name: name, baseURL: profile.BaseURL, model: profile.Model, apiKey: key}, nil
+		return openAIGenerator{
+			name:           name,
+			baseURL:        profile.BaseURL,
+			model:          profile.Model,
+			apiKey:         key,
+			maxTokensParam: profile.MaxTokensParam,
+		}, nil
 
 	case TypeAnthropic:
 		key, err := apiKey(name, profile)
@@ -77,26 +83,42 @@ func New(cfg appconfig.Config) (Generator, error) {
 	}
 }
 
-// profileFor resolves a provider name to a profile. The built-in default for
-// "anthropic" exists so that the shipped default configuration names a provider
-// that resolves; every other name must be declared.
+// ProfileOpenAI is the built-in profile name for OpenAI itself, as distinct
+// from the openai-compat type that also serves Ollama, Groq and OpenRouter.
+const ProfileOpenAI = "openai"
+
+const openAIBaseURL = "https://api.openai.com/v1"
+
+// profileFor resolves a provider name to a profile. Built-in profiles exist for
+// the two first-party vendors so the shipped default resolves without a config
+// block; every other name must be declared.
 func profileFor(cfg appconfig.Config, name string) (appconfig.ProviderConfig, bool) {
 	if profile, ok := cfg.AI.Providers[name]; ok {
 		return profile, true
-	}
-	if name != TypeAnthropic {
-		return appconfig.ProviderConfig{}, false
 	}
 
 	model := cfg.AI.CommitModel
 	if model == "" {
 		model = cfg.AI.Model
 	}
-	return appconfig.ProviderConfig{
-		Type:      TypeAnthropic,
-		APIKeyEnv: "ANTHROPIC_API_KEY",
-		Model:     model,
-	}, true
+
+	switch name {
+	case ProfileOpenAI:
+		return appconfig.ProviderConfig{
+			Type:      TypeOpenAICompat,
+			BaseURL:   openAIBaseURL,
+			APIKeyEnv: "OPENAI_API_KEY",
+			Model:     model,
+		}, true
+	case TypeAnthropic:
+		return appconfig.ProviderConfig{
+			Type:      TypeAnthropic,
+			APIKeyEnv: "ANTHROPIC_API_KEY",
+			Model:     model,
+		}, true
+	}
+
+	return appconfig.ProviderConfig{}, false
 }
 
 func apiKey(name string, profile appconfig.ProviderConfig) (string, error) {

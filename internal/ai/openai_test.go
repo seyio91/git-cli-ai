@@ -64,6 +64,43 @@ func TestOpenAISendsTheDocumentedRequestShape(t *testing.T) {
 	}
 }
 
+// OpenAI's newer models reject max_tokens and require max_completion_tokens,
+// while Ollama, Groq and OpenRouter still take max_tokens. The profile decides,
+// and only the configured key may be sent — sending both is a 400 on the models
+// that care.
+func TestOpenAIUsesTheConfiguredTokenLimitParam(t *testing.T) {
+	for _, tc := range []struct{ name, configured, want, absent string }{
+		{"default", "", "max_tokens", "max_completion_tokens"},
+		{"newer models", "max_completion_tokens", "max_completion_tokens", "max_tokens"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, got := newTestServer(t, http.StatusOK, openAIReply)
+			gen := openAIGenerator{
+				name: "test", baseURL: server.URL, model: "test-model",
+				apiKey: "sk-test", maxTokensParam: tc.configured,
+			}
+
+			if _, err := gen.Generate(context.Background(), testRequest()); err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if got.body[tc.want] == nil {
+				t.Fatalf("%q was not sent; body keys: %v", tc.want, keysOf(got.body))
+			}
+			if got.body[tc.absent] != nil {
+				t.Fatalf("%q was also sent; the two are mutually exclusive", tc.absent)
+			}
+		})
+	}
+}
+
+func keysOf(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // base_url is documented as the API root, but a base_url that already names the
 // endpoint must not produce /chat/completions/chat/completions.
 func TestOpenAIURLTolerates(t *testing.T) {

@@ -42,11 +42,17 @@ type AIConfig struct {
 // api_key field by design: key material is only ever read from the environment
 // named by APIKeyEnv.
 type ProviderConfig struct {
-	Type      string   `json:"type"`
-	BaseURL   string   `json:"base_url,omitempty"`
-	APIKeyEnv string   `json:"api_key_env,omitempty"`
-	Model     string   `json:"model,omitempty"`
-	Command   []string `json:"command,omitempty"`
+	Type      string `json:"type"`
+	BaseURL   string `json:"base_url,omitempty"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+	Model     string `json:"model,omitempty"`
+	// MaxTokensParam names the field that carries the output limit. OpenAI's
+	// newer models reject max_tokens and require max_completion_tokens, while
+	// the other endpoints this type serves — Ollama, Groq, OpenRouter — still
+	// take max_tokens. There is no reliable way to infer which from a model
+	// id, so the profile states it. Empty means max_tokens.
+	MaxTokensParam string   `json:"max_tokens_param,omitempty"`
+	Command        []string `json:"command,omitempty"`
 }
 
 type PRConfig struct {
@@ -96,12 +102,13 @@ type fileAIConfig struct {
 // falling through to the strict-unknown-key path, whose error would quote the
 // offending source line back at the caller.
 type fileProviderConfig struct {
-	Type      *string  `toml:"type"`
-	BaseURL   *string  `toml:"base_url"`
-	APIKeyEnv *string  `toml:"api_key_env"`
-	Model     *string  `toml:"model"`
-	Command   []string `toml:"command"`
-	APIKey    *string  `toml:"api_key"`
+	Type           *string  `toml:"type"`
+	BaseURL        *string  `toml:"base_url"`
+	APIKeyEnv      *string  `toml:"api_key_env"`
+	Model          *string  `toml:"model"`
+	MaxTokensParam *string  `toml:"max_tokens_param"`
+	Command        []string `toml:"command"`
+	APIKey         *string  `toml:"api_key"`
 }
 
 type filePRConfig struct {
@@ -156,9 +163,13 @@ func Defaults() Config {
 			Style: "conventional-commits",
 		},
 		AI: AIConfig{
-			Provider:    "anthropic",
-			CommitModel: "claude-haiku-4-5",
-			PRModel:     "claude-sonnet-5",
+			// gpt-4.1-mini is the default because it is fast and cheap enough
+			// for the commit hot path and accepts max_tokens. OpenAI's newer
+			// models reject that parameter; point a profile at one of those and
+			// set max_tokens_param = "max_completion_tokens".
+			Provider:    "openai",
+			CommitModel: "gpt-4.1-mini",
+			PRModel:     "gpt-4.1",
 		},
 		PR: PRConfig{
 			Template: "",
@@ -361,6 +372,10 @@ func applyProviders(resolved *Resolved, profiles map[string]fileProviderConfig, 
 		if profile.Model != nil {
 			current.Model = *profile.Model
 			resolved.Sources[prefix+"model"] = layer
+		}
+		if profile.MaxTokensParam != nil {
+			current.MaxTokensParam = *profile.MaxTokensParam
+			resolved.Sources[prefix+"max_tokens_param"] = layer
 		}
 		if profile.Command != nil {
 			current.Command = profile.Command

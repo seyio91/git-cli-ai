@@ -10,17 +10,16 @@ import (
 // api_key_env and model distinguish one such provider from another, so they are
 // all one code path.
 type openAIGenerator struct {
-	name    string
-	baseURL string
-	model   string
-	apiKey  string
+	name           string
+	baseURL        string
+	model          string
+	apiKey         string
+	maxTokensParam string
 }
 
-type openAIRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens int             `json:"max_tokens"`
-	Messages  []openAIMessage `json:"messages"`
-}
+// defaultMaxTokensParam is what every OpenAI-compatible endpoint accepted until
+// OpenAI's newer models began rejecting it in favour of max_completion_tokens.
+const defaultMaxTokensParam = "max_tokens"
 
 type openAIMessage struct {
 	Role    string `json:"role"`
@@ -41,13 +40,19 @@ func (g openAIGenerator) Generate(ctx context.Context, req GenRequest) (GenResul
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+g.apiKey)
 
-	body := openAIRequest{
-		Model:     g.model,
-		MaxTokens: maxOutputTokens,
-		Messages: []openAIMessage{
+	// Built as a map so the output-limit key can vary per profile; the rest of
+	// the body is identical across every compatible endpoint.
+	limitParam := g.maxTokensParam
+	if limitParam == "" {
+		limitParam = defaultMaxTokensParam
+	}
+	body := map[string]any{
+		"model": g.model,
+		"messages": []openAIMessage{
 			{Role: "system", Content: req.Instructions()},
 			{Role: "user", Content: req.Task()},
 		},
+		limitParam: maxOutputTokens,
 	}
 
 	var response openAIResponse
