@@ -75,10 +75,13 @@ func (r result) payload(t *testing.T) struct {
 }
 
 // hermeticEnv isolates git from the developer's global and system config so
-// results do not depend on the machine running the tests.
+// results do not depend on the machine running the tests. It also puts a
+// test-controlled directory first on PATH, which is how `gh` is intercepted —
+// see writeFakeGH.
 func hermeticEnv(home string) []string {
 	return append(os.Environ(),
 		"HOME="+home,
+		"PATH="+ghBinDir(home)+string(os.PathListSeparator)+os.Getenv("PATH"),
 		// Pin the XDG root inside the throwaway repo so the tool's global
 		// config never resolves to the developer's real ~/.config.
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".xdg"),
@@ -105,7 +108,89 @@ func newRepo(t *testing.T) string {
 	mustGit(t, dir, "add", "seed.txt")
 	mustGit(t, dir, "commit", "-qm", "chore: seed")
 
+	// Fail closed: any `gh` call from a test that has not installed a fake
+	// exits nonzero rather than reaching GitHub. A forgotten fake is then a
+	// loud test failure instead of a silent network call.
+	installGH(t, dir, `#!/bin/sh
+echo "real gh must never be called from the acceptance suite; install a fake with writeFakeGH" >&2
+exit 97
+`)
+
 	return dir
+}
+
+// ghBinDir is inside .git deliberately: anywhere else in the working tree and
+// the fake would show up as an untracked file, which several criteria assert
+// on. git never reports paths under .git.
+func ghBinDir(repo string) string {
+	return filepath.Join(repo, ".git", "bin")
+}
+
+// installGH writes an executable named gh into the directory hermeticEnv puts
+// first on PATH.
+func installGH(t *testing.T, repo string, script string) {
+	t.Helper()
+
+	path := filepath.Join(ghBinDir(repo), "gh")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeFakeGH replaces the poison pill with a fake that appends its argv to a
+// log and prints body. The log is what lets a test assert on which subcommands
+// ran — including that `merge` never did.
+func writeFakeGH(t *testing.T, repo string, body string) (log string) {
+	t.Helper()
+
+	// Also inside .git, for the same reason as the fake itself: a log file in
+	// the working tree would be an untracked path the tool can see.
+	log = filepath.Join(ghBinDir(repo), "gh.log")
+	installGH(t, repo, "#!/bin/sh\necho \"$@\" >> "+log+"\n"+body+"\n")
+	return log
+}
+
+// runGH invokes gh resolved through the hermetic PATH, so a test can prove the
+// interception works.
+//
+// t.Setenv is load-bearing rather than incidental: exec.Command resolves a
+// bare binary name with LookPath against the *calling* process's PATH and
+// ignores cmd.Env entirely. Setting cmd.Env alone finds the developer's real
+// gh. The tool under test is unaffected — it is a child process whose own
+// environment is the cmd.Env we pass, so its lookup sees the fake — but a
+// helper running in-process has to change PATH for real.
+func runGH(t *testing.T, repo string, args ...string) (string, error) {
+	t.Helper()
+
+	t.Setenv("PATH", ghBinDir(repo)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cmd := exec.Command("gh", args...)
+	cmd.Dir = repo
+	cmd.Env = hermeticEnv(repo)
+
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// ghCalls returns the recorded argv lines, one per invocation.
+func ghCalls(t *testing.T, log string) []string {
+	t.Helper()
+
+	data, err := os.ReadFile(log)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := strings.TrimSpace(string(data))
+	if out == "" {
+		return nil
+	}
+	return strings.Split(out, "\n")
 }
 
 func run(t *testing.T, repo string, args ...string) result {

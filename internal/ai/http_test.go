@@ -192,3 +192,57 @@ func TestPostJSONHonoursContextCancellation(t *testing.T) {
 		t.Fatal("expected an error for a cancelled context")
 	}
 }
+
+// Truncated output is otherwise indistinguishable from finished output — a
+// commit body cut mid-sentence still passes validation, because body content is
+// deliberately opaque. Both APIs report the stop on the wire, so ignoring it is
+// a silent corruption rather than a missing nicety.
+func TestOpenAIRejectsTruncatedOutput(t *testing.T) {
+	server, _ := newTestServer(t, http.StatusOK,
+		`{"choices":[{"message":{"content":"feat(api): add the thing that"},"finish_reason":"length"}]}`)
+	gen := openAIGenerator{name: "test", baseURL: server.URL, model: "m", apiKey: "sk-test"}
+
+	_, err := gen.Generate(context.Background(), testRequest())
+	if err == nil {
+		t.Fatal("a length-stopped response was accepted as complete")
+	}
+	if pe := providerError(t, err); !strings.Contains(pe.Message, "output limit") {
+		t.Fatalf("message = %q, want it to name the limit", pe.Message)
+	}
+}
+
+func TestAnthropicRejectsTruncatedOutput(t *testing.T) {
+	server, _ := newTestServer(t, http.StatusOK,
+		`{"content":[{"type":"text","text":"feat(api): add the thing that"}],"stop_reason":"max_tokens"}`)
+	gen := anthropicGenerator{name: "test", baseURL: server.URL, model: "m", apiKey: "sk-test"}
+
+	_, err := gen.Generate(context.Background(), testRequest())
+	if err == nil {
+		t.Fatal("a max_tokens-stopped response was accepted as complete")
+	}
+}
+
+// A PR body is a multi-section document; sharing the commit ceiling truncated
+// real bodies.
+func TestOutputCeilingIsSizedByKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		want int
+	}{
+		{KindCommit, maxCommitTokens},
+		{KindPRBody, maxPRBodyTokens},
+		{"", maxCommitTokens},
+	} {
+		server, got := newTestServer(t, http.StatusOK, openAIReply)
+		gen := openAIGenerator{name: "test", baseURL: server.URL, model: "m", apiKey: "sk-test"}
+
+		req := testRequest()
+		req.Kind = tc.kind
+		if _, err := gen.Generate(context.Background(), req); err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if limit, _ := got.body["max_tokens"].(float64); int(limit) != tc.want {
+			t.Fatalf("kind %q sent max_tokens=%v, want %d", tc.kind, got.body["max_tokens"], tc.want)
+		}
+	}
+}

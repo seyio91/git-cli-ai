@@ -36,7 +36,8 @@ type anthropicText struct {
 }
 
 type anthropicResponse struct {
-	Content []anthropicText `json:"content"`
+	Content    []anthropicText `json:"content"`
+	StopReason string          `json:"stop_reason"`
 }
 
 func (g anthropicGenerator) Generate(ctx context.Context, req GenRequest) (GenResult, error) {
@@ -50,9 +51,10 @@ func (g anthropicGenerator) Generate(ctx context.Context, req GenRequest) (GenRe
 
 	// The style rules go in the system block and the change in the user turn,
 	// so the stable prefix stays byte-identical across requests.
+	limit := outputTokensFor(req.Kind)
 	body := anthropicRequest{
 		Model:     g.model,
-		MaxTokens: maxOutputTokens,
+		MaxTokens: limit,
 		System:    []anthropicText{{Type: "text", Text: req.Instructions()}},
 		Messages: []anthropicMessage{
 			{Role: "user", Content: []anthropicText{{Type: "text", Text: req.Task()}}},
@@ -62,6 +64,10 @@ func (g anthropicGenerator) Generate(ctx context.Context, req GenRequest) (GenRe
 	var response anthropicResponse
 	if err := postJSON(ctx, g.name, anthropicMessagesURL(g.baseURL), header, body, &response); err != nil {
 		return GenResult{}, err
+	}
+
+	if response.StopReason == "max_tokens" {
+		return GenResult{}, truncatedError(g.name, limit)
 	}
 
 	var text strings.Builder

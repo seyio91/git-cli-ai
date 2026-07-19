@@ -9,10 +9,21 @@ import (
 	"strings"
 )
 
+// Kind selects what is being written. It only changes the preamble and which
+// model a built-in profile resolves to: the request shape, the prompt assembly
+// and every provider stay shared.
+const (
+	KindCommit = "commit"
+	KindPRBody = "pr-body"
+)
+
 type GenRequest struct {
-	// Style is the rules block for the active commit style. It is stable
-	// across requests and is rendered first so it can serve as a cacheable
-	// prompt prefix.
+	// Kind is empty for a commit message, which is the original and default
+	// request, so the --context-only payload is unchanged by its addition.
+	Kind string `json:"kind,omitempty"`
+	// Style is the rules block for the active commit style, or the PR
+	// template for a pr-body request. It is stable across requests and is
+	// rendered first so it can serve as a cacheable prompt prefix.
 	Style    string         `json:"style"`
 	Diff     string         `json:"diff"`
 	Context  []ContextBlock `json:"context,omitempty"`
@@ -58,10 +69,21 @@ const instructionsPreamble = `Write the commit message for the staged change des
 Reply with the message itself and nothing else: no preamble, no commentary, no
 code fences.`
 
+const prBodyPreamble = `Write the pull request body for the change described below, filling in the
+template that follows. Keep its headings and their order, replace every
+{{placeholder}} with real content, and leave a placeholder's section empty when
+nothing is known about it rather than inventing something.
+Reply with the body itself and nothing else: no preamble, no commentary, no
+code fences.`
+
 // Instructions is the stable half of the prompt: it depends only on the commit
-// style, never on the change being described.
+// style or the PR template, never on the change being described.
 func (r GenRequest) Instructions() string {
-	return instructionsPreamble + "\n\n" + r.Style
+	preamble := instructionsPreamble
+	if r.Kind == KindPRBody {
+		preamble = prBodyPreamble
+	}
+	return preamble + "\n\n" + r.Style
 }
 
 // Task is the volatile half: the intent, the context blocks, the diff, and any
