@@ -86,10 +86,29 @@ func TestSC24_NeverInvokesMerge(t *testing.T) {
 		t.Fatalf("exit = %d, want 0 (stdout: %s)", res.exitCode, res.stdout)
 	}
 
+	// Match on the subcommand, not the whole argv: a commit subject like
+	// "merge upstream into feat" legitimately becomes --title, and asserting
+	// over the full line would fail on correct behaviour.
 	for _, call := range ghCalls(t, log) {
-		if strings.Contains(call, "merge") {
-			t.Fatalf("a merge subcommand was invoked: %q", call)
+		fields := strings.Fields(call)
+		for i := 0; i < len(fields) && i < 3; i++ {
+			if fields[i] == "merge" {
+				t.Fatalf("a merge subcommand was invoked: %q", call)
+			}
 		}
+	}
+}
+
+// The assertion above must survive a title that merely contains the word.
+func TestSC24_MergeCheckToleratesTheWordInATitle(t *testing.T) {
+	repo := newRepo(t)
+	withRemote(t, repo)
+	onFeatureBranch(t, repo)
+	mustGit(t, repo, "commit", "-q", "--allow-empty", "-m", "feat(x): merge upstream changes")
+	writeFakeGH(t, repo, ghCreateSucceeds)
+
+	if res := run(t, repo, "pr", "--json"); res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
 	}
 }
 
