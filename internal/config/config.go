@@ -31,10 +31,28 @@ type CommitConfig struct {
 }
 
 type AIConfig struct {
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	CommitModel string `json:"commit_model"`
-	PRModel     string `json:"pr_model"`
+	Provider    string                    `json:"provider"`
+	Model       string                    `json:"model"`
+	CommitModel string                    `json:"commit_model"`
+	PRModel     string                    `json:"pr_model"`
+	Providers   map[string]ProviderConfig `json:"providers,omitempty"`
+}
+
+// ProviderConfig is one named profile under [ai.providers]. There is no
+// api_key field by design: key material is only ever read from the environment
+// named by APIKeyEnv.
+type ProviderConfig struct {
+	Type      string `json:"type"`
+	BaseURL   string `json:"base_url,omitempty"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+	Model     string `json:"model,omitempty"`
+	// MaxTokensParam names the field that carries the output limit. OpenAI's
+	// newer models reject max_tokens and require max_completion_tokens, while
+	// the other endpoints this type serves — Ollama, Groq, OpenRouter — still
+	// take max_tokens. There is no reliable way to infer which from a model
+	// id, so the profile states it. Empty means max_tokens.
+	MaxTokensParam string   `json:"max_tokens_param,omitempty"`
+	Command        []string `json:"command,omitempty"`
 }
 
 type PRConfig struct {
@@ -73,10 +91,24 @@ type fileCommitConfig struct {
 }
 
 type fileAIConfig struct {
-	Provider    *string `toml:"provider"`
-	Model       *string `toml:"model"`
-	CommitModel *string `toml:"commit_model"`
-	PRModel     *string `toml:"pr_model"`
+	Provider    *string                       `toml:"provider"`
+	Model       *string                       `toml:"model"`
+	CommitModel *string                       `toml:"commit_model"`
+	PRModel     *string                       `toml:"pr_model"`
+	Providers   map[string]fileProviderConfig `toml:"providers"`
+}
+
+// APIKey is declared only so that an inline key is rejected by name rather than
+// falling through to the strict-unknown-key path, whose error would quote the
+// offending source line back at the caller.
+type fileProviderConfig struct {
+	Type           *string  `toml:"type"`
+	BaseURL        *string  `toml:"base_url"`
+	APIKeyEnv      *string  `toml:"api_key_env"`
+	Model          *string  `toml:"model"`
+	MaxTokensParam *string  `toml:"max_tokens_param"`
+	Command        []string `toml:"command"`
+	APIKey         *string  `toml:"api_key"`
 }
 
 type filePRConfig struct {
@@ -131,9 +163,13 @@ func Defaults() Config {
 			Style: "conventional-commits",
 		},
 		AI: AIConfig{
-			Provider:    "anthropic",
-			CommitModel: "claude-haiku-4-5",
-			PRModel:     "claude-sonnet-5",
+			// gpt-4.1-mini is the default because it is fast and cheap enough
+			// for the commit hot path and accepts max_tokens. OpenAI's newer
+			// models reject that parameter; point a profile at one of those and
+			// set max_tokens_param = "max_completion_tokens".
+			Provider:    "openai",
+			CommitModel: "gpt-4.1-mini",
+			PRModel:     "gpt-4.1",
 		},
 		PR: PRConfig{
 			Template: "",
@@ -214,12 +250,15 @@ func decodeFile(path string, r io.Reader) (*fileConfig, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		message := fmt.Sprintf("invalid config file %s", path)
 		details := err.Error()
+		// strict.String() annotates the offending source lines, which would echo
+		// a secret back to the caller if the unknown key happened to hold one.
+		// The key and the file are already named in the message.
 		var strict *toml.StrictMissingError
 		if errors.As(err, &strict) {
 			if keys := strictKeys(strict); keys != "" {
 				message = fmt.Sprintf("invalid config file %s: unknown key %s", path, keys)
 			}
-			details = strict.String()
+			details = ""
 		}
 		return nil, &LoadError{
 			Message: message,
@@ -271,6 +310,9 @@ func apply(resolved *Resolved, cfg *fileConfig, layer string, path string) error
 			resolved.Config.AI.PRModel = *cfg.AI.PRModel
 			resolved.Sources["ai.pr_model"] = layer
 		}
+		if err := applyProviders(resolved, cfg.AI.Providers, layer, path); err != nil {
+			return err
+		}
 	}
 
 	if cfg.PR != nil && cfg.PR.Template != nil {
@@ -290,6 +332,69 @@ func apply(resolved *Resolved, cfg *fileConfig, layer string, path string) error
 	}
 
 	return nil
+}
+
+// applyProviders merges provider profiles key by key, so a repo file that sets
+// one field of a profile keeps the fields an earlier layer supplied.
+func applyProviders(resolved *Resolved, profiles map[string]fileProviderConfig, layer string, path string) error {
+	for name, profile := range profiles {
+		if profile.APIKey != nil {
+			return &LoadError{
+				Message: fmt.Sprintf("invalid config file %s: api_key is not permitted in [ai.providers.%s]", path, name),
+				Hint:    fmt.Sprintf("remove api_key and set api_key_env to the name of an environment variable holding the key; rotate the key that was written to %s", path),
+			}
+		}
+
+		if resolved.Config.AI.Providers == nil {
+			resolved.Config.AI.Providers = map[string]ProviderConfig{}
+		}
+		current := resolved.Config.AI.Providers[name]
+
+		prefix := "ai.providers." + name + "."
+		if profile.Type != nil {
+			if !validProviderType(*profile.Type) {
+				return &LoadError{
+					Message: fmt.Sprintf("invalid ai.providers.%s.type in %s: %q", name, path, *profile.Type),
+					Hint:    "set type to anthropic, openai-compat, or cli",
+				}
+			}
+			current.Type = *profile.Type
+			resolved.Sources[prefix+"type"] = layer
+		}
+		if profile.BaseURL != nil {
+			current.BaseURL = *profile.BaseURL
+			resolved.Sources[prefix+"base_url"] = layer
+		}
+		if profile.APIKeyEnv != nil {
+			current.APIKeyEnv = *profile.APIKeyEnv
+			resolved.Sources[prefix+"api_key_env"] = layer
+		}
+		if profile.Model != nil {
+			current.Model = *profile.Model
+			resolved.Sources[prefix+"model"] = layer
+		}
+		if profile.MaxTokensParam != nil {
+			current.MaxTokensParam = *profile.MaxTokensParam
+			resolved.Sources[prefix+"max_tokens_param"] = layer
+		}
+		if profile.Command != nil {
+			current.Command = profile.Command
+			resolved.Sources[prefix+"command"] = layer
+		}
+
+		resolved.Config.AI.Providers[name] = current
+	}
+
+	return nil
+}
+
+func validProviderType(providerType string) bool {
+	switch providerType {
+	case "anthropic", "openai-compat", "cli":
+		return true
+	default:
+		return false
+	}
 }
 
 func validCommitStyle(style string) bool {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/seyio91/git-cli-ai/internal/ai"
 	appconfig "github.com/seyio91/git-cli-ai/internal/config"
 	gitrepo "github.com/seyio91/git-cli-ai/internal/git"
 	"github.com/seyio91/git-cli-ai/internal/style"
@@ -14,8 +15,9 @@ import (
 )
 
 type commitOptions struct {
-	message string
-	all     bool
+	message     string
+	all         bool
+	contextOnly bool
 }
 
 type commitPayload struct {
@@ -36,6 +38,7 @@ func NewCommitCommand(root *Options, out io.Writer) *cobra.Command {
 
 	cmd.Flags().StringVarP(&opts.message, "message", "m", "", "commit message")
 	cmd.Flags().BoolVar(&opts.all, "all", false, "stage tracked modified and deleted files before committing")
+	cmd.Flags().BoolVar(&opts.contextOnly, "context-only", false, "emit the generation request as JSON without calling a provider or committing")
 
 	return cmd
 }
@@ -52,21 +55,17 @@ func runCommit(ctx context.Context, root *Options, opts *commitOptions, out io.W
 		return fail(styleErr.Error(), "set commit.style to conventional-commits, gitmoji, or freeform-with-rules")
 	}
 
-	if opts.message == "" {
-		return fail("--message is required", fmt.Sprintf("no message generator is configured yet; supply a message conforming to %s.", commitStyle))
-	}
-
-	if result := validator.Validate(opts.message); !result.Valid {
-		return fail(fmt.Sprintf("commit message does not conform to %s: %s", commitStyle, result.Reason), "supply a conforming message or configure a provider")
-	}
-
 	repo := gitrepo.New("")
 	status, err := repo.Status(ctx)
 	if err != nil {
 		return err
 	}
 
-	if opts.all && !root.DryRun {
+	// --context-only and --dry-run are both inspection modes and neither may
+	// touch the index.
+	inspecting := root.DryRun || opts.contextOnly
+
+	if opts.all && !inspecting {
 		if err := repo.AddTracked(ctx); err != nil {
 			return err
 		}
@@ -77,24 +76,148 @@ func runCommit(ctx context.Context, root *Options, opts *commitOptions, out io.W
 	}
 
 	files := status.StagedFiles()
-	if root.DryRun && opts.all {
+	if inspecting && opts.all {
 		files = status.CommitCandidateFiles(true)
 	}
 	if len(files) == 0 {
 		return emptyStageError(status)
 	}
 
+	// Decided before the message is resolved: --context-only hands the request
+	// to the caller's own agent and stops, so it must not depend on whether a
+	// supplied message happens to conform.
+	if opts.contextOnly {
+		return writeGenRequest(ctx, out, validator, repo, files, opts.message)
+	}
+
+	message := opts.message
+	if message == "" || !validator.Validate(message).Valid {
+		message, err = resolveMessage(ctx, resolved, validator, commitStyle, repo, files, opts, out)
+		if err != nil || message == "" {
+			return err
+		}
+	}
+
 	if !root.DryRun {
-		if err := repo.Commit(ctx, opts.message); err != nil {
+		if err := repo.Commit(ctx, message); err != nil {
 			return err
 		}
 	}
 
 	return writeCommitPayload(out, root.JSON, commitPayload{
-		Message: opts.message,
+		Message: message,
 		Files:   files,
 		DryRun:  root.DryRun,
 	})
+}
+
+// resolveMessage covers the two paths that need a generator: no message at all,
+// and a supplied message that does not conform. It returns an empty message with
+// a nil error when --context-only has already written the request, which is the
+// one case where there is nothing left to commit.
+func resolveMessage(
+	ctx context.Context,
+	resolved appconfig.Resolved,
+	validator style.Validator,
+	commitStyle string,
+	repo gitrepo.Repository,
+	files []string,
+	opts *commitOptions,
+	out io.Writer,
+) (string, error) {
+	// The provider is only engaged when a layer actually asked for one. With
+	// the built-in default still in force there is nothing configured to call,
+	// so the offline behaviour stands.
+	configured := resolved.Sources["ai.provider"] != appconfig.LayerDefault
+	if !configured {
+		if opts.message == "" {
+			return "", fail(
+				"--message is required",
+				fmt.Sprintf("no ai provider is configured; supply a message conforming to %s, or configure one under [ai.providers]", commitStyle),
+			)
+		}
+		result := validator.Validate(opts.message)
+		return "", fail(
+			fmt.Sprintf("commit message does not conform to %s: %s", commitStyle, result.Reason),
+			fmt.Sprintf("supply a conforming message, or configure an ai provider under [ai.providers] to render this one into %s", commitStyle),
+		)
+	}
+
+	diff, err := repo.DiffStaged(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	req := ai.GenRequest{
+		Style:   validator.Rules(),
+		Diff:    diff,
+		Context: contextBlocks(ctx, repo, files),
+		Intent:  opts.message,
+	}
+
+	generator, err := ai.New(resolved.Config)
+	if err != nil {
+		return "", err
+	}
+
+	result, err := generator.Generate(ctx, req)
+	if err != nil {
+		return "", err
+	}
+
+	// Exactly one retry, carrying the rejection back so the generator can
+	// correct itself. A generator that fails twice is not going to converge.
+	if verdict := validator.Validate(result.Message); !verdict.Valid {
+		req.Feedback = &ai.Feedback{Message: result.Message, Reason: verdict.Reason}
+		result, err = generator.Generate(ctx, req)
+		if err != nil {
+			return "", err
+		}
+
+		if verdict := validator.Validate(result.Message); !verdict.Valid {
+			return "", failWithDetails(
+				fmt.Sprintf("generated commit message does not conform to %s: %s", commitStyle, verdict.Reason),
+				"the provider was re-prompted once with the rejection and still did not conform; supply --message, or point [ai].provider at a more capable model",
+				result.Message,
+			)
+		}
+	}
+
+	return result.Message, nil
+}
+
+// writeGenRequest emits the provider-neutral request for the caller's own agent
+// to act on. No provider is resolved, so it works with none configured.
+func writeGenRequest(
+	ctx context.Context,
+	out io.Writer,
+	validator style.Validator,
+	repo gitrepo.Repository,
+	files []string,
+	intent string,
+) error {
+	diff, err := repo.DiffStaged(ctx)
+	if err != nil {
+		return err
+	}
+
+	return json.NewEncoder(out).Encode(ai.GenRequest{
+		Style:   validator.Rules(),
+		Diff:    diff,
+		Context: contextBlocks(ctx, repo, files),
+		Intent:  intent,
+	})
+}
+
+func contextBlocks(ctx context.Context, repo gitrepo.Repository, files []string) []ai.ContextBlock {
+	blocks := []ai.ContextBlock{{Label: "staged files", Content: strings.Join(files, "\n")}}
+
+	// A detached HEAD is a legitimate state to commit from, so a missing branch
+	// name drops the block rather than failing the commit.
+	if branch, err := repo.CurrentBranch(ctx); err == nil {
+		blocks = append(blocks, ai.ContextBlock{Label: "branch", Content: branch})
+	}
+	return blocks
 }
 
 func emptyStageError(status gitrepo.Status) error {
