@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Repository struct {
@@ -20,6 +21,10 @@ type Repository struct {
 // condition rather than a command failure and is deliberately not a
 // *CommandError.
 var ErrDetachedHead = errors.New("HEAD is not on a named branch")
+
+// ErrNoUpstream reports that a branch has no tracking ref. Like ErrDetachedHead
+// it is a state the caller acts on, not a failure to report.
+var ErrNoUpstream = errors.New("branch has no upstream")
 
 type CommandError struct {
 	Args     []string
@@ -68,6 +73,13 @@ func (r Repository) DiffUnstaged(ctx context.Context) (string, error) {
 	return r.Diff(ctx, false)
 }
 
+// DiffRange returns the diff of HEAD against the merge base with ref, which is
+// what a pull request actually proposes: commits made on ref since the branch
+// left it are not part of it.
+func (r Repository) DiffRange(ctx context.Context, ref string) (string, error) {
+	return r.run(ctx, "diff", ref+"...HEAD")
+}
+
 func (r Repository) Add(ctx context.Context, paths ...string) error {
 	args := append([]string{"add", "--"}, paths...)
 	_, err := r.run(ctx, args...)
@@ -84,7 +96,16 @@ func (r Repository) Commit(ctx context.Context, message string) error {
 	return err
 }
 
+// pushTimeout bounds the only git call that touches the network. Every other
+// subprocess in the tree is bounded; an unreachable host or a credential helper
+// waiting on a TTY that does not exist would otherwise block an unattended
+// agent forever with no diagnostic.
+const pushTimeout = 2 * time.Minute
+
 func (r Repository) Push(ctx context.Context, remote string, branch string, setUpstream bool) error {
+	ctx, cancel := context.WithTimeout(ctx, pushTimeout)
+	defer cancel()
+
 	args := []string{"push"}
 	if setUpstream {
 		args = append(args, "-u")
@@ -109,6 +130,82 @@ func (r Repository) CurrentBranch(ctx context.Context) (string, error) {
 		return "", ErrDetachedHead
 	}
 	return branch, nil
+}
+
+// Upstream returns the tracking ref for branch, or ErrNoUpstream when none is
+// configured. git reports a missing upstream as a command failure, so the
+// condition is normalised here rather than surfaced as a *CommandError.
+func (r Repository) Upstream(ctx context.Context, branch string) (string, error) {
+	out, err := r.run(ctx, "rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}")
+	if err != nil {
+		return "", ErrNoUpstream
+	}
+	upstream := strings.TrimSpace(out)
+	if upstream == "" {
+		return "", ErrNoUpstream
+	}
+	return upstream, nil
+}
+
+// NeedsPush reports whether branch has commits the remote has not seen. A
+// branch with no upstream always needs pushing.
+func (r Repository) NeedsPush(ctx context.Context, branch string) (bool, error) {
+	upstream, err := r.Upstream(ctx, branch)
+	if errors.Is(err, ErrNoUpstream) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	out, err := r.run(ctx, "rev-list", "--count", upstream+".."+branch)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "0", nil
+}
+
+// RemoteHead reads the branch origin/HEAD points at. It is a local ref, so this
+// answers the default-branch question without any network round trip — but only
+// once something has set it.
+func (r Repository) RemoteHead(ctx context.Context, remote string) (string, error) {
+	if remote == "" {
+		remote = "origin"
+	}
+	ref := "refs/remotes/" + remote + "/HEAD"
+	out, err := r.run(ctx, "symbolic-ref", "--short", ref)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(strings.TrimSpace(out), remote+"/"), nil
+}
+
+// SetRemoteHead caches a default branch discovered elsewhere into origin/HEAD so
+// the next run takes the offline path.
+func (r Repository) SetRemoteHead(ctx context.Context, remote string, branch string) error {
+	if remote == "" {
+		remote = "origin"
+	}
+	_, err := r.run(ctx, "remote", "set-head", remote, branch)
+	return err
+}
+
+// Subjects returns the subject lines of the most recent commits, newest first.
+// A non-empty revs narrows the range — "<base>..HEAD" for just this branch's
+// work — and an empty one walks back from HEAD.
+func (r Repository) Subjects(ctx context.Context, limit int, revs ...string) ([]string, error) {
+	args := append([]string{"log", fmt.Sprintf("-%d", limit), "--format=%s"}, revs...)
+	out, err := r.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	var subjects []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			subjects = append(subjects, line)
+		}
+	}
+	return subjects, nil
 }
 
 func (r Repository) Remote(ctx context.Context, name string) (string, error) {

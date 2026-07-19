@@ -19,6 +19,12 @@ const (
 // configuration failure and is reported before any request is attempted, so an
 // unset key never turns into an unauthenticated call.
 func New(cfg appconfig.Config) (Generator, error) {
+	return NewFor(cfg, KindCommit)
+}
+
+// NewFor is New with the request kind stated, so a built-in profile resolves to
+// the model configured for that task rather than always the commit model.
+func NewFor(cfg appconfig.Config, kind string) (Generator, error) {
 	name := cfg.AI.Provider
 	if name == "" {
 		return nil, &ProviderError{
@@ -27,7 +33,7 @@ func New(cfg appconfig.Config) (Generator, error) {
 		}
 	}
 
-	profile, ok := profileFor(cfg, name)
+	profile, ok := profileFor(cfg, name, kind)
 	if !ok {
 		return nil, &ProviderError{
 			Provider: name,
@@ -92,12 +98,15 @@ const openAIBaseURL = "https://api.openai.com/v1"
 // profileFor resolves a provider name to a profile. Built-in profiles exist for
 // the two first-party vendors so the shipped default resolves without a config
 // block; every other name must be declared.
-func profileFor(cfg appconfig.Config, name string) (appconfig.ProviderConfig, bool) {
+func profileFor(cfg appconfig.Config, name string, kind string) (appconfig.ProviderConfig, bool) {
 	if profile, ok := cfg.AI.Providers[name]; ok {
 		return profile, true
 	}
 
 	model := cfg.AI.CommitModel
+	if kind == KindPRBody {
+		model = cfg.AI.PRModel
+	}
 	if model == "" {
 		model = cfg.AI.Model
 	}

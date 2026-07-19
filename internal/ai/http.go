@@ -14,9 +14,13 @@ import (
 const (
 	requestTimeout = 60 * time.Second
 
-	// maxOutputTokens is sized for a header plus a short body. A commit
+	// maxCommitTokens is sized for a header plus a short body. A commit
 	// message that needs more than this is not one worth committing.
-	maxOutputTokens = 1024
+	maxCommitTokens = 1024
+
+	// maxPRBodyTokens is larger because a PR body is a multi-section document,
+	// not a subject line. Sharing the commit ceiling truncated real bodies.
+	maxPRBodyTokens = 4096
 
 	// maxErrorBody bounds how much of a provider's error response is quoted
 	// back, so a stray HTML page cannot become the whole error payload. It
@@ -87,6 +91,26 @@ func postJSON(ctx context.Context, provider string, url string, header http.Head
 		}
 	}
 	return nil
+}
+
+// outputTokensFor sizes the ceiling to what is being written.
+func outputTokensFor(kind string) int {
+	if kind == KindPRBody {
+		return maxPRBodyTokens
+	}
+	return maxCommitTokens
+}
+
+// truncatedError reports output that stopped at the token ceiling. Both APIs
+// say so on the wire, and a truncated result is otherwise indistinguishable
+// from a complete one — a commit body cut mid-sentence still passes validation,
+// because body content is deliberately opaque.
+func truncatedError(provider string, limit int) error {
+	return &ProviderError{
+		Provider: provider,
+		Message:  fmt.Sprintf("ai provider %q stopped at the %d-token output limit", provider, limit),
+		Hint:     "the response was cut off rather than finished; retry, shorten the change, or supply the text yourself",
+	}
 }
 
 func truncate(text string, limit int) string {

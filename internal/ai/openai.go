@@ -28,7 +28,8 @@ type openAIMessage struct {
 
 type openAIResponse struct {
 	Choices []struct {
-		Message openAIMessage `json:"message"`
+		Message      openAIMessage `json:"message"`
+		FinishReason string        `json:"finish_reason"`
 	} `json:"choices"`
 }
 
@@ -46,13 +47,14 @@ func (g openAIGenerator) Generate(ctx context.Context, req GenRequest) (GenResul
 	if limitParam == "" {
 		limitParam = defaultMaxTokensParam
 	}
+	limit := outputTokensFor(req.Kind)
 	body := map[string]any{
 		"model": g.model,
 		"messages": []openAIMessage{
 			{Role: "system", Content: req.Instructions()},
 			{Role: "user", Content: req.Task()},
 		},
-		limitParam: maxOutputTokens,
+		limitParam: limit,
 	}
 
 	var response openAIResponse
@@ -62,6 +64,9 @@ func (g openAIGenerator) Generate(ctx context.Context, req GenRequest) (GenResul
 
 	if len(response.Choices) == 0 {
 		return GenResult{}, emptyMessageError(g.name)
+	}
+	if response.Choices[0].FinishReason == "length" {
+		return GenResult{}, truncatedError(g.name, limit)
 	}
 	message := strings.TrimSpace(response.Choices[0].Message.Content)
 	if message == "" {

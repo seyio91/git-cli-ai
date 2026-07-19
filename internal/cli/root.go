@@ -11,6 +11,7 @@ import (
 	"github.com/seyio91/git-cli-ai/internal/ai"
 	appconfig "github.com/seyio91/git-cli-ai/internal/config"
 	"github.com/seyio91/git-cli-ai/internal/git"
+	"github.com/seyio91/git-cli-ai/internal/pr"
 	"github.com/spf13/cobra"
 )
 
@@ -91,6 +92,7 @@ func NewRootCommand(opts *Options, out io.Writer, errOut io.Writer) *cobra.Comma
 	cmd.PersistentFlags().BoolVar(&opts.DryRun, "dry-run", false, "preview without mutating")
 	cmd.AddCommand(NewCommitCommand(opts, out))
 	cmd.AddCommand(NewConfigCommand(opts, out))
+	cmd.AddCommand(NewPRCommand(opts, out))
 
 	return cmd
 }
@@ -142,6 +144,11 @@ func describeError(err error) failure {
 		return failure{message: pe.Message, hint: pe.Hint, details: pe.Details}
 	}
 
+	var fe *pr.Error
+	if errors.As(err, &fe) {
+		return failure{message: fe.Message, hint: fe.Hint, details: fe.Details}
+	}
+
 	if errors.Is(err, git.ErrDetachedHead) {
 		return failure{
 			message: "HEAD is not on a named branch",
@@ -179,6 +186,11 @@ func gitHint(ge *git.CommandError) string {
 		return "git could not write to the repository; check the file permissions on .git"
 	case strings.Contains(stderr, "please tell me who you are"), strings.Contains(stderr, "empty ident"):
 		return "set a commit identity with `git config user.name` and `git config user.email`"
+	case strings.Contains(stderr, "non-fast-forward"), strings.Contains(stderr, "rejected"):
+		return "the remote has commits this branch does not; pull or rebase onto the upstream, then retry"
+	case strings.Contains(stderr, "could not read from remote"), strings.Contains(stderr, "authentication failed"),
+		strings.Contains(stderr, "permission denied (publickey)"):
+		return "the remote rejected the connection; check the remote URL and that your credentials or SSH key are available to this shell"
 	case strings.Contains(stderr, "no upstream"), strings.Contains(stderr, "no such remote"):
 		return "set an upstream with `git push -u <remote> <branch>`"
 	}
