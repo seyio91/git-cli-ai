@@ -76,3 +76,28 @@ func isEmojiToken(token string) bool {
 	}
 	return true
 }
+
+// Type prefers a Conventional prefix when the subject carries one, so a gitmoji
+// message that also states a type branches the same way a conventional one
+// does. A bare :shortcode: supplies its own name; a literal emoji cannot, since
+// it is not usable in a branch name.
+func (gitmojiStyle) Type(message string) string {
+	header, result := splitHeader(message)
+	if !result.Valid {
+		return ""
+	}
+
+	token, subject, ok := strings.Cut(header, " ")
+	if !ok {
+		return ""
+	}
+	if conventionalPrefixPattern.MatchString(subject) {
+		if t := conventional.Type(subject); t != "" {
+			return t
+		}
+	}
+	if shortcodePattern.MatchString(token) {
+		return strings.Trim(token, ":")
+	}
+	return ""
+}

@@ -24,6 +24,10 @@ type Result struct {
 
 type Validator interface {
 	Validate(message string) Result
+	// Type is the branch-name segment this message belongs under. Branch
+	// naming asks the style rather than parsing the message itself, so the
+	// three grammars cannot drift from the names derived off them.
+	Type(message string) string
 	// Rules states the same contract Validate enforces, in the form a
 	// generator is prompted with. It is fixed per style so it can head a
 	// prompt as a stable, cacheable prefix.
@@ -51,6 +55,10 @@ type conventionalStyle struct{}
 func (conventionalStyle) Validate(message string) Result {
 	result := conventional.Validate(message)
 	return Result{Valid: result.Valid, Reason: result.Reason}
+}
+
+func (conventionalStyle) Type(message string) string {
+	return conventional.Type(message)
 }
 
 func (conventionalStyle) Rules() string {

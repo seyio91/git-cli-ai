@@ -42,3 +42,7 @@ func (freeformStyle) Validate(message string) Result {
 
 	return Result{Valid: true}
 }
+
+// Type is empty: freeform messages carry no type, so the branch name comes from
+// the subject alone.
+func (freeformStyle) Type(string) string { return "" }
