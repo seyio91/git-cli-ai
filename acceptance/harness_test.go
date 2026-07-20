@@ -87,6 +87,13 @@ func hermeticEnv(home string) []string {
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".xdg"),
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_SYSTEM=/dev/null",
+		// Blank both memory-root knobs so an unpinned repo is genuinely
+		// unpinned. Without this a developer with either set exports their real
+		// memory tree into every test, and the degradation criteria would pass
+		// for the wrong reason — HOME is already a throwaway, so the remaining
+		// ~/.claude-memory fallback resolves to nothing.
+		"AI_MEMORY_ROOT=",
+		"MEMORY_DIR=",
 		"GIT_AUTHOR_NAME=test",
 		"GIT_AUTHOR_EMAIL=test@example.com",
 		"GIT_COMMITTER_NAME=test",
@@ -175,6 +182,38 @@ func runGH(t *testing.T, repo string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// writeFakeGHCapturingBody behaves like the create-succeeds fake but also saves
+// what `pr create` was fed on stdin. The body travels through `--body-file -`,
+// so it never appears in the argv log — asserting on the log alone would say
+// nothing about what was actually posted.
+func writeFakeGHCapturingBody(t *testing.T, repo string, url string) (bodyPath string) {
+	t.Helper()
+
+	bodyPath = filepath.Join(ghBinDir(repo), "gh.body")
+	log := filepath.Join(ghBinDir(repo), "gh.log")
+	installGH(t, repo, `#!/bin/sh
+echo "$@" >> `+log+`
+case "$1 $2" in
+  "pr list") echo "[]" ;;
+  "repo view") echo '{"defaultBranchRef":{"name":"main"}}' ;;
+  "pr create") cat > `+bodyPath+`; echo "`+url+`" ;;
+  *) echo "unexpected gh invocation: $@" >&2; exit 64 ;;
+esac
+`)
+	return bodyPath
+}
+
+// postedBody returns what the tool actually sent to `gh pr create`.
+func postedBody(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("gh pr create was never fed a body: %v", err)
+	}
+	return string(data)
+}
+
 // ghCalls returns the recorded argv lines, one per invocation.
 func ghCalls(t *testing.T, log string) []string {
 	t.Helper()
@@ -193,12 +232,87 @@ func ghCalls(t *testing.T, log string) []string {
 	return strings.Split(out, "\n")
 }
 
+// memoryTree writes a throwaway memory tree containing one project and returns
+// its root, ready to be passed to runWith as AI_MEMORY_ROOT. Files with empty
+// content are not written at all, so a test can model a project that is missing
+// its todo.md or memory.md.
+func memoryTree(t *testing.T, project string, files map[string]string) string {
+	t.Helper()
+
+	root := t.TempDir()
+	for name, content := range files {
+		if content == "" {
+			continue
+		}
+		writeFileAt(t, filepath.Join(root, "projects", project, name), content)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "projects", project), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// pinRepo writes the marker naming the memory project this repository belongs
+// to. The value is written verbatim so a test can supply a hostile one.
+func pinRepo(t *testing.T, repo string, value string) {
+	t.Helper()
+	writeFileAt(t, filepath.Join(repo, ".agents", "memory-project"), value)
+}
+
+// genRequest is the --context-only contract: the provider-neutral request an
+// agent acts on. Decoded separately from payload so a change to its shape is a
+// compile error here rather than a silently ignored field.
+type genRequest struct {
+	Kind    string `json:"kind"`
+	Style   string `json:"style"`
+	Diff    string `json:"diff"`
+	Intent  string `json:"intent"`
+	Context []struct {
+		Label   string `json:"label"`
+		Content string `json:"content"`
+	} `json:"context"`
+}
+
+func decodeGenRequest(t *testing.T, r result) genRequest {
+	t.Helper()
+	var req genRequest
+	if err := json.Unmarshal([]byte(r.stdout), &req); err != nil {
+		t.Fatalf("stdout is not a GenRequest (%v): %q", err, r.stdout)
+	}
+	return req
+}
+
+// contextLabels lists the context block labels in the order they were emitted.
+func (g genRequest) contextLabels() []string {
+	labels := make([]string, 0, len(g.Context))
+	for _, block := range g.Context {
+		labels = append(labels, block.Label)
+	}
+	return labels
+}
+
+func (g genRequest) block(label string) (string, bool) {
+	for _, b := range g.Context {
+		if b.Label == label {
+			return b.Content, true
+		}
+	}
+	return "", false
+}
+
 func run(t *testing.T, repo string, args ...string) result {
+	t.Helper()
+	return runWith(t, repo, nil, args...)
+}
+
+// runWith runs the binary with extra environment entries appended after the
+// hermetic ones, so they win.
+func runWith(t *testing.T, repo string, extraEnv []string, args ...string) result {
 	t.Helper()
 
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = repo
-	cmd.Env = hermeticEnv(repo)
+	cmd.Env = append(hermeticEnv(repo), extraEnv...)
 
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

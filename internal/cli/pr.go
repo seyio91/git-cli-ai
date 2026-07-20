@@ -11,6 +11,7 @@ import (
 	"github.com/seyio91/git-cli-ai/internal/ai"
 	appconfig "github.com/seyio91/git-cli-ai/internal/config"
 	gitrepo "github.com/seyio91/git-cli-ai/internal/git"
+	"github.com/seyio91/git-cli-ai/internal/memory"
 	"github.com/seyio91/git-cli-ai/internal/pr"
 	"github.com/spf13/cobra"
 )
@@ -231,12 +232,14 @@ func resolveBody(
 		return supplied, nil
 	}
 
+	mem := memoryContext(ctx, repo)
+
 	// Same rule as commit: the provider is only engaged when a layer actually
 	// asked for one. With none configured the body is rendered locally rather
 	// than failing — an unopenable pull request is a worse outcome than a
 	// terse one.
 	if resolved.Sources["ai.provider"] == appconfig.LayerDefault {
-		return offlineBody(ctx, repo, template, supplied, title, base)
+		return offlineBody(ctx, repo, template, supplied, title, base, mem)
 	}
 
 	diff, err := branchDiff(ctx, repo, base)
@@ -253,7 +256,7 @@ func resolveBody(
 		Kind:    ai.KindPRBody,
 		Style:   template.Text,
 		Diff:    diff,
-		Context: prContext(ctx, repo, title, base),
+		Context: withMemory(prContext(ctx, repo, title, base), mem),
 		Intent:  supplied,
 	})
 	if err != nil {
@@ -265,7 +268,7 @@ func resolveBody(
 // offlineBody fills the template from the commit log. Placeholders with no
 // local source resolve to nothing, which the template is required to render
 // cleanly.
-func offlineBody(ctx context.Context, repo gitrepo.Repository, template pr.Template, supplied string, title string, base string) (string, error) {
+func offlineBody(ctx context.Context, repo gitrepo.Repository, template pr.Template, supplied string, title string, base string, mem memory.Context) (string, error) {
 	subjects := branchSubjects(ctx, repo, base)
 
 	summary := supplied
@@ -283,6 +286,8 @@ func offlineBody(ctx context.Context, repo gitrepo.Repository, template pr.Templ
 	return template.Render(map[string]string{
 		"summary": summary,
 		"changes": strings.TrimRight(changes.String(), "\n"),
+		"task":    mem.Task,
+		"plan":    mem.Plan,
 	}), nil
 }
 

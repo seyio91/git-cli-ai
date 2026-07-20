@@ -132,6 +132,15 @@ func (r Repository) CurrentBranch(ctx context.Context) (string, error) {
 	return branch, nil
 }
 
+// Root returns the working tree's top level.
+func (r Repository) Root(ctx context.Context) (string, error) {
+	out, err := r.run(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // Upstream returns the tracking ref for branch, or ErrNoUpstream when none is
 // configured. git reports a missing upstream as a command failure, so the
 // condition is normalised here rather than surfaced as a *CommandError.

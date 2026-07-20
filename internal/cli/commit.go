@@ -217,7 +217,7 @@ func contextBlocks(ctx context.Context, repo gitrepo.Repository, files []string)
 	if branch, err := repo.CurrentBranch(ctx); err == nil {
 		blocks = append(blocks, ai.ContextBlock{Label: "branch", Content: branch})
 	}
-	return blocks
+	return withMemory(blocks, memoryContext(ctx, repo))
 }
 
 func emptyStageError(status gitrepo.Status) error {
