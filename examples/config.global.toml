@@ -1,0 +1,58 @@
+# git-cli global configuration.
+#
+# Location: $XDG_CONFIG_HOME/git-cli/config.toml, or ~/.config/git-cli/config.toml.
+# Every value here is a default that a repo's .git-cli.toml can override per key.
+# All values are shown at or near their built-in defaults; delete any block you
+# do not want to change — absent files and absent keys both fall back to the
+# built-in defaults.
+
+[commit]
+# One of: conventional-commits (default), gitmoji, freeform-with-rules.
+style = "conventional-commits"
+
+[branch]
+# Pattern for the branch `ship` creates on the default branch. Must contain
+# {type} and/or {slug}; {type} comes from the commit style, {slug} from the
+# subject. An empty default_branch means "detect it" (origin/HEAD, then gh).
+pattern = "{type}/{slug}"
+default_branch = ""
+
+[pr]
+# Path to a PR body template. Empty uses the built-in template, whose sections
+# are Summary, Changes, Task, Plan, Testing. A section left with no content is
+# dropped from the rendered body.
+template = ""
+
+[ai]
+# The active provider profile, by name. "openai" and "anthropic" are built in
+# and resolve with no [ai.providers] block. provider/model can be overridden
+# per repo; commit_model and pr_model route the two tasks to different models.
+provider = "openai"
+commit_model = "gpt-4.1-mini"
+pr_model = "gpt-4.1"
+
+# Named provider profiles. API keys are NEVER stored here — a profile names the
+# environment variable to read the key from (api_key_env). Three profile types:
+#
+#   openai-compat — one HTTP path for OpenAI, Gemini's compat endpoint, Groq,
+#                   OpenRouter, and local Ollama / LM Studio. Needs base_url and
+#                   api_key_env. Some newer models reject `max_tokens` and want
+#                   `max_completion_tokens`; set max_tokens_param when so.
+#   anthropic     — the first-party Anthropic API. Needs api_key_env.
+#   cli           — shell out to an existing tool (reuses its own auth). Needs
+#                   command as an argv array.
+
+[ai.providers.openai]
+type = "openai-compat"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[ai.providers.ollama]
+type = "openai-compat"
+base_url = "http://localhost:11434/v1"
+api_key_env = "OLLAMA_API_KEY"
+model = "llama3.1"
+
+[ai.providers.claude-cli]
+type = "cli"
+command = ["claude", "-p"]
