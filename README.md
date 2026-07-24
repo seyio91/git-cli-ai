@@ -112,7 +112,7 @@ Ready-to-copy examples are in [`examples/`](examples/): [`config.global.toml`](e
 A provider profile has a `type`:
 
 - **`openai-compat`** — one HTTP path for OpenAI, Gemini's compatibility endpoint, Groq, OpenRouter, and local Ollama / LM Studio. Needs `base_url` and `api_key_env`. Some newer models reject `max_tokens` and require `max_completion_tokens`; set `max_tokens_param` on the profile when so.
-- **`anthropic`** — the first-party Anthropic API. Needs `api_key_env`.
+- **`anthropic`** — the first-party Anthropic API. Needs `api_key_env`. Written and unit-tested against an in-process server, but **not yet verified against a live endpoint** — the `openai-compat` and `cli` paths have been exercised end to end, this one has not.
 - **`cli`** — shell out to an existing tool (reusing its own auth). Needs `command` as an argv array, e.g. `["claude", "-p"]`.
 
 **API keys are never stored in config.** A profile names the environment variable to read its key from (`api_key_env`); the key itself lives only in the environment. The `openai` and `anthropic` profiles are built in and resolve with no `[ai.providers]` block, keyed off `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`.

@@ -84,7 +84,7 @@ func runPR(ctx context.Context, root *Options, opts *prOptions, out io.Writer) e
 
 	base := opts.base
 	if base == "" {
-		base, err = defaultBranch(ctx, resolved, repo, provider)
+		base, err = defaultBranch(ctx, resolved, repo, provider, root.DryRun)
 		if err != nil {
 			return err
 		}
@@ -111,13 +111,16 @@ func runPR(ctx context.Context, root *Options, opts *prOptions, out io.Writer) e
 		}
 	}
 
-	url, found, err := provider.ExistingPR(ctx, branch)
+	existing, found, err := provider.ExistingPR(ctx, branch)
 	if err != nil {
 		return err
 	}
 	if found {
+		if err := baseMismatch(opts.base, existing.Base); err != nil {
+			return err
+		}
 		return writePRPayload(out, root.JSON, prPayload{
-			URL:      url,
+			URL:      existing.URL,
 			Branch:   branch,
 			Base:     base,
 			Existing: true,
@@ -130,16 +133,18 @@ func runPR(ctx context.Context, root *Options, opts *prOptions, out io.Writer) e
 		return err
 	}
 
+	// The dry-run return sits before resolveBody: a preview must cost no
+	// provider call, and the body it would generate is not part of the preview.
+	if root.DryRun {
+		return writePRPayload(out, root.JSON, prPayload{Branch: branch, Base: base, Title: title, DryRun: true})
+	}
+
 	body, err = resolveBody(ctx, resolved, repo, template, body, title, base)
 	if err != nil {
 		return err
 	}
 
-	if root.DryRun {
-		return writePRPayload(out, root.JSON, prPayload{Branch: branch, Base: base, Title: title, DryRun: true})
-	}
-
-	url, err = provider.OpenPR(ctx, pr.Request{Base: base, Head: branch, Title: title, Body: body})
+	url, err := provider.OpenPR(ctx, pr.Request{Base: base, Head: branch, Title: title, Body: body})
 	if err != nil {
 		return err
 	}
@@ -177,7 +182,7 @@ func suppliedBody(opts *prOptions) (string, error) {
 // config value, then origin/HEAD, then gh. The config value short-circuits
 // before any forge call, and a branch learned from gh is cached back into
 // origin/HEAD so the next run takes the offline path.
-func defaultBranch(ctx context.Context, resolved appconfig.Resolved, repo gitrepo.Repository, provider pr.Provider) (string, error) {
+func defaultBranch(ctx context.Context, resolved appconfig.Resolved, repo gitrepo.Repository, provider pr.Provider, dryRun bool) (string, error) {
 	if configured := resolved.Config.Branch.DefaultBranch; configured != "" {
 		return configured, nil
 	}
@@ -191,11 +196,28 @@ func defaultBranch(ctx context.Context, resolved appconfig.Resolved, repo gitrep
 		return "", err
 	}
 
-	// Best effort: the cache is an optimisation, and a remote that cannot be
-	// reached to record it must not fail a pull request that otherwise works.
-	_ = repo.SetRemoteHead(ctx, "origin", branch)
+	// Best effort, and skipped under --dry-run: the cache is an optimisation,
+	// and a preview must write nothing — caching origin/HEAD is a real ref
+	// mutation.
+	if !dryRun {
+		_ = repo.SetRemoteHead(ctx, "origin", branch)
+	}
 
 	return branch, nil
+}
+
+// baseMismatch errors when the caller explicitly asked for a base that
+// disagrees with an existing open PR's base. An unset requested base (the
+// detected default) or an unknown existing base is not a disagreement — those
+// converge, returning the existing URL.
+func baseMismatch(requested, existing string) error {
+	if requested == "" || existing == "" || requested == existing {
+		return nil
+	}
+	return fail(
+		fmt.Sprintf("an open pull request for this branch targets %s, but --base is %s", existing, requested),
+		fmt.Sprintf("re-run without --base to use the existing pull request, or close it to open one against %s", requested),
+	)
 }
 
 // prTitle uses the branch's most recent commit subject. It needs no base ref,

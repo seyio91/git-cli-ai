@@ -99,7 +99,7 @@ func runShip(ctx context.Context, root *Options, opts *shipOptions, out io.Write
 
 	base := opts.base
 	if base == "" {
-		base, err = defaultBranch(ctx, resolved, repo, provider)
+		base, err = defaultBranch(ctx, resolved, repo, provider, root.DryRun)
 		if err != nil {
 			return err
 		}
@@ -189,12 +189,15 @@ func runShip(ctx context.Context, root *Options, opts *shipOptions, out io.Write
 			return err
 		}
 		if !work {
-			url, found, err := provider.ExistingPR(ctx, branch)
+			existing, found, err := provider.ExistingPR(ctx, branch)
 			if err != nil {
 				return err
 			}
 			if found {
-				return writeShipPayload(out, root.JSON, shipPayload{URL: url, Branch: branch, Base: base, Existing: true})
+				if err := baseMismatch(opts.base, existing.Base); err != nil {
+					return err
+				}
+				return writeShipPayload(out, root.JSON, shipPayload{URL: existing.URL, Branch: branch, Base: base, Existing: true})
 			}
 			return emptyStageError(status)
 		}
@@ -229,13 +232,16 @@ func openPR(
 		}
 	}
 
-	url, found, err := provider.ExistingPR(ctx, branch)
+	existing, found, err := provider.ExistingPR(ctx, branch)
 	if err != nil {
 		return err
 	}
 	if found {
+		if err := baseMismatch(prOpts.base, existing.Base); err != nil {
+			return err
+		}
 		return writeShipPayload(out, root.JSON, shipPayload{
-			URL:           url,
+			URL:           existing.URL,
 			Branch:        branch,
 			Base:          base,
 			CreatedBranch: createdBranch,
@@ -254,7 +260,7 @@ func openPR(
 		return err
 	}
 
-	url, err = provider.OpenPR(ctx, pr.Request{Base: base, Head: branch, Title: title, Body: body})
+	url, err := provider.OpenPR(ctx, pr.Request{Base: base, Head: branch, Title: title, Body: body})
 	if err != nil {
 		return err
 	}
