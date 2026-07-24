@@ -21,12 +21,20 @@ type Request struct {
 	Body  string
 }
 
+// Existing describes an open pull request already on a branch. Base may be
+// empty when the forge does not report it; callers must treat an empty Base as
+// "unknown", not as a mismatch.
+type Existing struct {
+	URL  string
+	Base string
+}
+
 // Provider is the forge-facing surface. There is no merge method, and there
 // will not be one: refusing to merge is the property this tool is built around.
 type Provider interface {
-	// ExistingPR returns the URL of an open pull request for head, if one
-	// exists. A false second result means none was found, not an error.
-	ExistingPR(ctx context.Context, head string) (string, bool, error)
+	// ExistingPR returns the open pull request for head, if one exists. A false
+	// second result means none was found, not an error.
+	ExistingPR(ctx context.Context, head string) (Existing, bool, error)
 	DefaultBranch(ctx context.Context) (string, error)
 	OpenPR(ctx context.Context, req Request) (string, error)
 }
@@ -59,27 +67,28 @@ func NewGH(dir string) GH {
 	return GH{Dir: dir, Binary: "gh"}
 }
 
-func (g GH) ExistingPR(ctx context.Context, head string) (string, bool, error) {
-	out, err := g.run(ctx, "", "pr", "list", "--head", head, "--state", "open", "--json", "url", "--limit", "1")
+func (g GH) ExistingPR(ctx context.Context, head string) (Existing, bool, error) {
+	out, err := g.run(ctx, "", "pr", "list", "--head", head, "--state", "open", "--json", "url,baseRefName", "--limit", "1")
 	if err != nil {
-		return "", false, err
+		return Existing{}, false, err
 	}
 
 	var prs []struct {
-		URL string `json:"url"`
+		URL         string `json:"url"`
+		BaseRefName string `json:"baseRefName"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &prs); err != nil {
-		return "", false, &Error{
+		return Existing{}, false, &Error{
 			Message: "could not read the pull request list from gh",
-			Hint:    "run `gh pr list --head " + head + " --json url` to see what it emits",
+			Hint:    "run `gh pr list --head " + head + " --json url,baseRefName` to see what it emits",
 			Details: strings.TrimSpace(out),
 		}
 	}
 
 	if len(prs) == 0 || prs[0].URL == "" {
-		return "", false, nil
+		return Existing{}, false, nil
 	}
-	return prs[0].URL, true, nil
+	return Existing{URL: prs[0].URL, Base: prs[0].BaseRefName}, true, nil
 }
 
 func (g GH) DefaultBranch(ctx context.Context) (string, error) {
