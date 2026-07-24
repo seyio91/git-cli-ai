@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/seyio91/git-cli-ai/internal/branch"
 )
 
 const (
@@ -322,6 +324,15 @@ func apply(resolved *Resolved, cfg *fileConfig, layer string, path string) error
 
 	if cfg.Branch != nil {
 		if cfg.Branch.Pattern != nil {
+			// Checked here rather than where ship renders it: the error then
+			// names the file that set it, and arrives before a billable
+			// message generation rather than after one.
+			if err := branch.ValidatePattern(*cfg.Branch.Pattern); err != nil {
+				return &LoadError{
+					Message: fmt.Sprintf("invalid branch.pattern in %s: %q: %s", path, *cfg.Branch.Pattern, err),
+					Hint:    "branch.pattern must contain {type} and/or {slug}, for example \"{type}/{slug}\"",
+				}
+			}
 			resolved.Config.Branch.Pattern = *cfg.Branch.Pattern
 			resolved.Sources["branch.pattern"] = layer
 		}

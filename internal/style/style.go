@@ -24,6 +24,14 @@ type Result struct {
 
 type Validator interface {
 	Validate(message string) Result
+	// Type is the branch-name segment this message belongs under. Branch
+	// naming asks the style rather than parsing the message itself, so the
+	// three grammars cannot drift from the names derived off them.
+	Type(message string) string
+	// Subject is the description a branch slug is built from: the header with
+	// the style's own prefix (type, emoji) removed. Kept on the validator for
+	// the same reason as Type — the grammar owns its own parsing.
+	Subject(message string) string
 	// Rules states the same contract Validate enforces, in the form a
 	// generator is prompted with. It is fixed per style so it can head a
 	// prompt as a stable, cacheable prefix.
@@ -51,6 +59,14 @@ type conventionalStyle struct{}
 func (conventionalStyle) Validate(message string) Result {
 	result := conventional.Validate(message)
 	return Result{Valid: result.Valid, Reason: result.Reason}
+}
+
+func (conventionalStyle) Type(message string) string {
+	return conventional.Type(message)
+}
+
+func (conventionalStyle) Subject(message string) string {
+	return afterPrefix(headerOf(message))
 }
 
 func (conventionalStyle) Rules() string {
@@ -90,4 +106,19 @@ func splitHeader(message string) (string, Result) {
 
 func invalid(reason string, expected string) Result {
 	return Result{Reason: fmt.Sprintf("%s; expected %s", reason, expected)}
+}
+
+// headerOf is the first line of a message, without a trailing CR.
+func headerOf(message string) string {
+	header, _, _ := strings.Cut(message, "\n")
+	return strings.TrimSuffix(header, "\r")
+}
+
+// afterPrefix drops a leading "type(scope): " style prefix, returning the
+// description. A header with no such prefix is its own subject.
+func afterPrefix(header string) string {
+	if _, desc, ok := strings.Cut(header, ": "); ok {
+		return desc
+	}
+	return header
 }

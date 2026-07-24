@@ -1,0 +1,23 @@
+# git-cli per-repository configuration.
+#
+# Location: .git-cli.toml at the repository root. Every key here overrides the
+# global config and the built-in defaults for this repo only, merged per key —
+# setting one field of [ai] leaves the others at their global/default value.
+#
+# A repo file is typically small: just the handful of things this project does
+# differently. The example below is deliberately fuller than most repos need.
+
+[commit]
+style = "conventional-commits"
+
+[branch]
+# This repo names ship's branches without the type prefix.
+pattern = "{slug}"
+
+[pr]
+# A checked-in PR template for this repo.
+template = ".github/pull_request_template.md"
+
+[ai]
+# Route this repo's generation at a local model, overriding the global provider.
+provider = "ollama"

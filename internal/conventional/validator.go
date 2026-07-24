@@ -111,3 +111,24 @@ func invalid(reason string) Result {
 		Reason: fmt.Sprintf("%s; expected type(scope): subject", reason),
 	}
 }
+
+// Type returns the header's type, or "" when the message is not conventional.
+// Branch naming needs only this much of the header, which is why the body stays
+// opaque.
+func Type(message string) string {
+	if !Validate(message).Valid {
+		return ""
+	}
+
+	header, _, _ := strings.Cut(message, "\n")
+	prefix, _, ok := strings.Cut(strings.TrimSuffix(header, "\r"), ":")
+	if !ok {
+		return ""
+	}
+
+	name, _, _, ok := splitPrefix(strings.TrimSuffix(prefix, "!"))
+	if !ok {
+		return ""
+	}
+	return name
+}

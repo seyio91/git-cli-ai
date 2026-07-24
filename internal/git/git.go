@@ -132,6 +132,65 @@ func (r Repository) CurrentBranch(ctx context.Context) (string, error) {
 	return branch, nil
 }
 
+// CreateBranch creates a new branch at the current HEAD and switches to it. The
+// index and working tree come along, so changes staged before the call remain
+// staged on the new branch.
+func (r Repository) CreateBranch(ctx context.Context, name string) error {
+	_, err := r.run(ctx, "checkout", "-b", name)
+	return err
+}
+
+// Checkout switches to an existing branch.
+func (r Repository) Checkout(ctx context.Context, name string) error {
+	_, err := r.run(ctx, "checkout", name)
+	return err
+}
+
+// BranchExists reports whether a local branch of this name exists. A clean
+// "not found" (exit 1) is false, not an error; any other failure is surfaced.
+func (r Repository) BranchExists(ctx context.Context, name string) (bool, error) {
+	_, err := r.run(ctx, "show-ref", "--verify", "--quiet", "refs/heads/"+name)
+	return boolFromExit(err)
+}
+
+// IsAncestor reports whether maybeAncestor is an ancestor of ref — the test for
+// "is this branch our own earlier partial run". git answers no with exit 1,
+// which is a false result rather than a failure.
+func (r Repository) IsAncestor(ctx context.Context, maybeAncestor string, ref string) (bool, error) {
+	_, err := r.run(ctx, "merge-base", "--is-ancestor", maybeAncestor, ref)
+	return boolFromExit(err)
+}
+
+// boolFromExit maps a predicate git command's result to a bool: success is
+// true, a clean exit 1 is false, and any other exit is a genuine error worth
+// surfacing rather than silently reading as false.
+func boolFromExit(err error) (bool, error) {
+	if err == nil {
+		return true, nil
+	}
+	var cmdErr *CommandError
+	if errors.As(err, &cmdErr) && cmdErr.ExitCode == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+// LocalBranches lists every local branch, in git's default (alphabetical)
+// order.
+func (r Repository) LocalBranches(ctx context.Context) ([]string, error) {
+	out, err := r.run(ctx, "branch", "--format=%(refname:short)")
+	if err != nil {
+		return nil, err
+	}
+	var branches []string
+	for _, line := range strings.Split(out, "\n") {
+		if b := strings.TrimSpace(line); b != "" {
+			branches = append(branches, b)
+		}
+	}
+	return branches, nil
+}
+
 // Root returns the working tree's top level.
 func (r Repository) Root(ctx context.Context) (string, error) {
 	out, err := r.run(ctx, "rev-parse", "--show-toplevel")

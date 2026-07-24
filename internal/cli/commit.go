@@ -92,7 +92,7 @@ func runCommit(ctx context.Context, root *Options, opts *commitOptions, out io.W
 
 	message := opts.message
 	if message == "" || !validator.Validate(message).Valid {
-		message, err = resolveMessage(ctx, resolved, validator, commitStyle, repo, files, opts, out)
+		message, err = resolveMessage(ctx, resolved, validator, commitStyle, repo, files, opts.message, out)
 		if err != nil || message == "" {
 			return err
 		}
@@ -122,7 +122,7 @@ func resolveMessage(
 	commitStyle string,
 	repo gitrepo.Repository,
 	files []string,
-	opts *commitOptions,
+	intent string,
 	out io.Writer,
 ) (string, error) {
 	// The provider is only engaged when a layer actually asked for one. With
@@ -130,13 +130,13 @@ func resolveMessage(
 	// so the offline behaviour stands.
 	configured := resolved.Sources["ai.provider"] != appconfig.LayerDefault
 	if !configured {
-		if opts.message == "" {
+		if intent == "" {
 			return "", fail(
 				"--message is required",
 				fmt.Sprintf("no ai provider is configured; supply a message conforming to %s, or configure one under [ai.providers]", commitStyle),
 			)
 		}
-		result := validator.Validate(opts.message)
+		result := validator.Validate(intent)
 		return "", fail(
 			fmt.Sprintf("commit message does not conform to %s: %s", commitStyle, result.Reason),
 			fmt.Sprintf("supply a conforming message, or configure an ai provider under [ai.providers] to render this one into %s", commitStyle),
@@ -152,7 +152,7 @@ func resolveMessage(
 		Style:   validator.Rules(),
 		Diff:    diff,
 		Context: contextBlocks(ctx, repo, files),
-		Intent:  opts.message,
+		Intent:  intent,
 	}
 
 	generator, err := ai.New(resolved.Config)
