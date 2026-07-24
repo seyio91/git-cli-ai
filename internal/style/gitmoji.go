@@ -101,3 +101,18 @@ func (gitmojiStyle) Type(message string) string {
 	}
 	return ""
 }
+
+// Subject drops the emoji token, then an embedded Conventional prefix if the
+// subject carries one, so ":sparkles: feat(api): add x" slugs from "add x"
+// rather than repeating the type and scope.
+func (gitmojiStyle) Subject(message string) string {
+	header := headerOf(message)
+	_, rest, ok := strings.Cut(header, " ")
+	if !ok {
+		return header
+	}
+	if conventionalPrefixPattern.MatchString(rest) {
+		return afterPrefix(rest)
+	}
+	return rest
+}

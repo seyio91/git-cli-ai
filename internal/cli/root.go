@@ -93,6 +93,7 @@ func NewRootCommand(opts *Options, out io.Writer, errOut io.Writer) *cobra.Comma
 	cmd.AddCommand(NewCommitCommand(opts, out))
 	cmd.AddCommand(NewConfigCommand(opts, out))
 	cmd.AddCommand(NewPRCommand(opts, out))
+	cmd.AddCommand(NewShipCommand(opts, out))
 
 	return cmd
 }
