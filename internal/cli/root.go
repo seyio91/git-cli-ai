@@ -47,9 +47,9 @@ func (e appError) Error() string {
 	return e.message
 }
 
-func Execute() {
+func Execute(version string) {
 	opts := &Options{}
-	cmd := NewRootCommand(opts, os.Stdout, os.Stderr)
+	cmd := NewRootCommand(opts, version, os.Stdout, os.Stderr)
 
 	// Seed from a raw scan of argv. Registering the flag resets opts.JSON to
 	// its default, and a flag-parse failure aborts before cobra ever populates
@@ -80,12 +80,15 @@ func wantsJSON(args []string) bool {
 	return found
 }
 
-func NewRootCommand(opts *Options, out io.Writer, errOut io.Writer) *cobra.Command {
+func NewRootCommand(opts *Options, version string, out io.Writer, errOut io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "git-cli",
 		Short:         "Git workflow helper",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Powers the built-in `--version` flag. The `version` subcommand carries
+		// the same string plus --json.
+		Version: buildVersion(version).String(),
 	}
 
 	cmd.PersistentFlags().BoolVar(&opts.JSON, "json", false, "emit JSON output")
@@ -94,6 +97,7 @@ func NewRootCommand(opts *Options, out io.Writer, errOut io.Writer) *cobra.Comma
 	cmd.AddCommand(NewConfigCommand(opts, out))
 	cmd.AddCommand(NewPRCommand(opts, out))
 	cmd.AddCommand(NewShipCommand(opts, out))
+	cmd.AddCommand(newVersionCommand(opts, version, out))
 
 	return cmd
 }
