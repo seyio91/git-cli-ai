@@ -16,12 +16,33 @@ It creates and opens pull requests. **It never merges them.**
 ## Build
 
 ```sh
-go build -o git-cli ./cmd/git-cli
+go build -o git-cli ./cmd/git-cli   # reports version "dev" + the commit it came from
+make build                          # stamps the release version from git tags
+```
+
+## Version
+
+`git-cli version` (or `--version`) reports the version and the commit the binary was built from:
+
+```sh
+$ git-cli version
+v1.2.0 (a461b0dfd6e4)
+$ git-cli version --json
+{"version":"v1.2.0","commit":"a461b0dfd6e4b79d9d90a68b03c122e616b52c8a","dirty":false}
+```
+
+The commit SHA and a `dirty` flag are embedded automatically from the build's VCS info, so even a plain `go build` tells you exactly which commit — and whether the tree was modified — a binary came from. The `version` field is `dev` for an ordinary build and is stamped from git tags on a release build (`make build`, via `-ldflags "-X main.version=$(git describe --tags --always --dirty)"`).
+
+**Cutting a release:** tag the commit and build.
+
+```sh
+git tag v1.2.0
+make build          # or: make install
 ```
 
 ## Commands
 
-`commit`, `pr`, `ship`, and `config`. `--json` and `--dry-run` are global and may appear on either side of the subcommand.
+`commit`, `pr`, `ship`, `config`, and `version`. `--json` and `--dry-run` are global and may appear on either side of the subcommand.
 
 ### `commit`
 
