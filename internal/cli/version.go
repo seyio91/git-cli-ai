@@ -3,12 +3,43 @@ package cli
 import (
 	"encoding/json"
 	"io"
+	"regexp"
 	"runtime/debug"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 const shortCommitLen = 12
+
+// pseudoVersion matches the trailing <yyyymmddhhmmss>-<12 hex> that every Go
+// module pseudo-version ends with, across all three of its forms:
+// v0.0.0-<ts>-<sha>, v1.2.3-0.<ts>-<sha>, and v1.2.3-pre.0.<ts>-<sha>.
+var pseudoVersion = regexp.MustCompile(`[-.][0-9]{14}-[0-9a-f]{12}$`)
+
+// releaseVersion reports whether a module version is a real release — something
+// a tag actually named — rather than a placeholder the toolchain synthesised.
+//
+// This is load-bearing, not defensive. A plain `go build` from a clean VCS tree
+// with no reachable semver tag gets a pseudo-version stamped into
+// bi.Main.Version, so "is it (devel)?" no longer distinguishes an install at a
+// tag from an ordinary local build — and reporting v0.0.0-<ts>-<sha> as the
+// version contradicts what a plain build is documented to say. Nothing is lost by
+// declining it: the commit it encodes is already reported in its own field.
+func releaseVersion(v string) bool {
+	if v == "" || v == "(devel)" {
+		return false
+	}
+
+	// Build metadata is not part of a version's identity, and it is not optional
+	// to handle: a build from a modified tree gets "+dirty" appended to the
+	// pseudo-version, which would otherwise slip past the match and be reported
+	// as a release.
+	if plus := strings.IndexByte(v, '+'); plus >= 0 {
+		v = v[:plus]
+	}
+	return !pseudoVersion.MatchString(v)
+}
 
 // versionInfo is what `version` reports. Commit and Dirty come from the build's
 // embedded VCS data, so they are populated for any build made from the repo,
@@ -20,9 +51,9 @@ type versionInfo struct {
 }
 
 // buildVersion resolves the version to report. The ldflags-stamped value wins;
-// failing that, a module version from `go install <module>@<tag>` is used; a
-// plain build stays "dev". The commit and dirty flag are always read from the
-// embedded build info.
+// failing that, a released module version from `go install <module>@<tag>` is
+// used; a plain build stays "dev". The commit and dirty flag are always read from
+// the embedded build info.
 func buildVersion(stamped string) versionInfo {
 	info := versionInfo{Version: stamped}
 
@@ -31,7 +62,7 @@ func buildVersion(stamped string) versionInfo {
 		return info
 	}
 
-	if stamped == "dev" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+	if stamped == "dev" && releaseVersion(bi.Main.Version) {
 		info.Version = bi.Main.Version
 	}
 	for _, s := range bi.Settings {
