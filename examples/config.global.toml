@@ -19,8 +19,12 @@ default_branch = ""
 
 [pr]
 # Path to a PR body template. Empty uses the built-in template, whose sections
-# are Summary, Changes, Task, Plan, Testing. A section left with no content is
-# dropped from the rendered body.
+# are Summary, Changes, Testing. A section left with no content is dropped from
+# the rendered body.
+#
+# {{task}} and {{plan}} are still substituted from the memory context if a
+# template asks for them by name. They are absent from the built-in template
+# because a reviewer is judging the diff, not the author's process.
 template = ""
 
 [ai]

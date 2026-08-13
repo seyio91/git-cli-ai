@@ -2,7 +2,9 @@
 
 A CLI wrapper around `git` that makes committing and opening pull requests a single, style-consistent command. Its primary consumer is AI agents, but it works standalone.
 
-The tool always owns the *format* of a message; only the *intent* varies. A supplied message that already conforms is used verbatim — no model call, so the offline path stays fast. A freeform message is rendered into the house format. With no message at all, intent is derived from the diff plus the active task context.
+The tool always owns the *format* of a commit message; only the *intent* varies. A supplied message that already conforms is used verbatim — no model call, so the offline path stays fast. A freeform message is rendered into the house format. With no message at all, intent is derived from the diff plus the active task context.
+
+A **pull request body is different**: `--body` / `--body-file` is always used verbatim, because a caller who has written the body has already decided what the PR says. `--intent` is the flag that asks for one to be written.
 
 It creates and opens pull requests. **It never merges them.**
 
@@ -72,7 +74,7 @@ Open a pull request for the current branch via `gh`, and return its URL.
 git-cli pr --title "Add pagination" --body-file PR.md
 ```
 
-- The body comes from `--body` / `--body-file` rendered into the configured template, or is generated from the diff and context when absent.
+- **`--body` / `--body-file` is authoritative**: posted byte for byte, with no provider call and no need for a reachable provider. Use `--intent` to have a body written for you from a rough description, or pass neither to generate from the diff.
 - An unpushed branch is pushed with `-u` first.
 - If an open PR already exists for the branch, its URL is returned (`"existing": true` in `--json`) — re-runs converge instead of duplicating.
 - Running on the default branch is an error: `pr` does not create branches (use `ship`).
@@ -80,9 +82,13 @@ git-cli pr --title "Add pagination" --body-file PR.md
 | Flag | Effect |
 |------|--------|
 | `--title` | PR title. Defaults to the latest commit subject. |
-| `--body` | PR body, or the intent to render into the template. |
-| `--body-file` | Read the body from a file. Mutually exclusive with `--body`. |
+| `--body` | PR body, used verbatim. No provider call. |
+| `--body-file` | Read the verbatim body from a file. Mutually exclusive with `--body`. |
+| `--intent` | Describe the change and let the provider render it into the template. Mutually exclusive with `--body` / `--body-file`. |
 | `--base` | Base branch. Defaults to the repository's detected default branch. |
+| `--draft` | Open the PR as a draft. Inert when converging on an existing PR — nothing is created, and `"existing": true` says so. |
+
+> **Breaking change.** `--body` used to be passed through only when it already carried every heading of the configured template; anything else was treated as intent and rewritten by the provider, which could silently drop sections the author wrote. It is now always verbatim. If you relied on the old shaping behaviour, switch to `--intent`.
 
 ### `ship`
 
@@ -96,7 +102,16 @@ git-cli ship -m "feat(api): add pagination"
 - On the default branch: derives a branch name from the resolved message (see `branch.pattern`), creates it, and commits there — **never onto the default branch**.
 - Converges on retry: an already-open PR is returned, a pushed branch is reused, and a partial run (commits made but not pushed) resumes at the push.
 
-Takes the union of `commit`'s and `pr`'s flags: `-m`/`--message`, `--all`, `--title`, `--body`/`--body-file`, `--base`.
+Takes the union of `commit`'s and `pr`'s flags: `-m`/`--message`, `--all`, `--title`, `--body`/`--body-file`, `--intent`, `--base`, `--draft`.
+
+**`ship` is not atomic.** It composes four steps, and only the last is safe to retry. If it fails after the branch, the commit or the push has landed, the error carries `completed` (what actually happened) and `resume` (the command to carry on with — the `pr` half, with the PR flags this run was given). Re-running `ship` after a push would commit a second time; follow `resume` instead.
+
+```
+Error: ai provider "litellm" returned HTTP 403
+Hint: the response was an HTML page rather than an API error, so the request probably never reached ai provider "litellm"; check the network path (VPN, proxy, DNS) before changing any credential
+Completed: created branch feat/add-pagination; committed on feat/add-pagination; pushed feat/add-pagination to origin
+Resume: git-cli pr
+```
 
 `--dry-run` previews the resolved message, the derived branch name, the push target, and the PR title, and mutates nothing.
 
@@ -121,7 +136,7 @@ Ready-to-copy examples are in [`examples/`](examples/): [`config.global.toml`](e
 | `commit.style` | `conventional-commits` | `conventional-commits`, `gitmoji`, or `freeform-with-rules`. |
 | `branch.pattern` | `{type}/{slug}` | Name `ship` gives a branch it creates. Must contain `{type}` and/or `{slug}`. |
 | `branch.default_branch` | *(detect)* | Override the default branch. Empty detects it via `origin/HEAD`, then `gh`. |
-| `pr.template` | *(built-in)* | Path to a PR body template. Empty uses the built-in (Summary / Changes / Task / Plan / Testing). |
+| `pr.template` | *(built-in)* | Path to a PR body template. Empty uses the built-in (Summary / Changes / Testing). `{{task}}` and `{{plan}}` are still substitutable in a custom template. |
 | `ai.provider` | `openai` | Active provider profile by name. |
 | `ai.model` | — | Model for both tasks, unless a per-task model is set. |
 | `ai.commit_model` | `gpt-4.1-mini` | Model for commit messages. |
@@ -140,7 +155,9 @@ A provider profile has a `type`:
 
 ## Memory / task awareness
 
-When a repository is pinned to a project in the AI memory system, `commit` and `pr` inject the active task, the plan's goal, and the project's goal into the generation prompt, and the PR body auto-links task and plan.
+When a repository is pinned to a project in the AI memory system, `commit` and `pr` inject the active task, the plan's goal, and the project's goal into the generation prompt.
+
+That context is **input only**. The default PR template has no `## Task` or `## Plan` section: a reviewer is deciding whether the diff is correct, and the author's task framing and step-by-step plan are process artifacts that already live in the memory tree — and the active task is frequently unrelated to the diff under review. A repository that does want them in its pull requests names `{{task}}` / `{{plan}}` in its own `pr.template`.
 
 Pinning is a file `.agents/memory-project` at the repo root containing the bare project name. The project is resolved under `$AI_MEMORY_ROOT`, then `$MEMORY_DIR`, then `~/.claude-memory` (`<base>/projects/<name>/`). A repo with no marker — the ordinary case — behaves exactly the same, on the diff alone, with no error.
 
@@ -148,6 +165,8 @@ Pinning is a file `.agents/memory-project` at the repo root containing the bare 
 
 - `--json` on every command, non-interactive by default.
 - Failures emit `{"error", "hint", "details"}` with a nonzero exit. `hint` is actionable guidance; `details` carries the underlying tool's own output.
+- A composite command that fails with work already done adds `{"completed", "resume"}` — the durable steps that succeeded, and the command to carry on with. Read these before retrying: they are the difference between resuming and double-committing.
+- A non-2xx provider response whose body is an HTML page is diagnosed as a network-path problem, not a rejected key. A corporate gateway with the VPN down answers `403` with one.
 - `--dry-run` previews and mutates nothing.
 - `commit --context-only` hands the generation request to a calling agent instead of calling a provider.
 - Operations converge on retry rather than fail on a second run. No command ever merges a pull request.

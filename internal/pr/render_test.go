@@ -13,6 +13,8 @@ func TestRenderDropsEmptySections(t *testing.T) {
 		"changes": "- a.txt",
 	})
 
+	// Task and Plan are not in the default template at all; asserting their
+	// absence here is what keeps them from drifting back in.
 	for _, gone := range []string{"## Task", "## Plan", "## Testing", "{{"} {
 		if strings.Contains(body, gone) {
 			t.Errorf("rendered body still contains %q:\n%s", gone, body)
@@ -28,17 +30,27 @@ func TestRenderDropsEmptySections(t *testing.T) {
 func TestRenderKeepsSectionsThatHaveValues(t *testing.T) {
 	tmpl := Template{Text: DefaultTemplate}
 
-	body := tmpl.Render(map[string]string{
-		"summary": "s", "changes": "c", "task": "P5.3", "plan": "phase5", "testing": "go test",
-	})
+	body := tmpl.Render(map[string]string{"summary": "s", "changes": "c", "testing": "go test"})
 
-	for _, kept := range []string{"## Task", "P5.3", "## Plan", "phase5", "## Testing", "go test"} {
+	for _, kept := range []string{"## Summary", "s", "## Changes", "c", "## Testing", "go test"} {
 		if !strings.Contains(body, kept) {
 			t.Errorf("rendered body lost %q:\n%s", kept, body)
 		}
 	}
-	if !tmpl.Fills(body) {
-		t.Errorf("a fully-valued render should satisfy Fills:\n%s", body)
+}
+
+// {{task}} and {{plan}} left the default template, but they are still
+// substitutable: a repository that wants them says so in its own pr.template,
+// and the memory context still supplies the values.
+func TestRenderStillSubstitutesTaskAndPlanInACustomTemplate(t *testing.T) {
+	tmpl := Template{Text: "## Summary\n{{summary}}\n\n## Task\n{{task}}\n\n## Plan\n{{plan}}\n"}
+
+	body := tmpl.Render(map[string]string{"summary": "s", "task": "P5.3", "plan": "phase5"})
+
+	for _, kept := range []string{"## Task", "P5.3", "## Plan", "phase5"} {
+		if !strings.Contains(body, kept) {
+			t.Errorf("a custom template lost %q:\n%s", kept, body)
+		}
 	}
 }
 
@@ -74,17 +86,5 @@ func TestRenderIgnoresFencedHeadings(t *testing.T) {
 	body := tmpl.Render(map[string]string{"summary": "s"})
 	if !strings.Contains(body, "# not a heading") {
 		t.Errorf("dropped fenced content:\n%s", body)
-	}
-}
-
-// The documented collision: with no memory project the offline path renders
-// Summary+Changes only, which Fills rejects. Asserted so the trade-off is
-// visible and cannot regress silently in either direction.
-func TestRenderedBodyWithDroppedSectionsDoesNotRoundTrip(t *testing.T) {
-	tmpl := Template{Text: DefaultTemplate}
-
-	body := tmpl.Render(map[string]string{"summary": "s", "changes": "c"})
-	if tmpl.Fills(body) {
-		t.Fatal("Fills now accepts a partial body — this reopens the Phase 4 rule that a body missing sections is intent")
 	}
 }

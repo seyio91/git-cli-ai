@@ -29,11 +29,19 @@ type appError struct {
 // errorPayload is the agent-facing error contract. hint is always actionable
 // guidance; git's own words go in details so the hint is never a bare stderr
 // dump.
+//
+// completed and resume exist because a composite command can fail with work
+// already on disk and on the remote. An agent reading only error and hint sees a
+// total failure and retries from the top, which commits a second time. These are
+// structured rather than folded into the hint precisely so that decision does not
+// depend on parsing prose.
 type errorPayload struct {
-	Error       string `json:"error"`
-	Hint        string `json:"hint,omitempty"`
-	Details     string `json:"details,omitempty"`
-	GitExitCode int    `json:"git_exit_code,omitempty"`
+	Error       string   `json:"error"`
+	Hint        string   `json:"hint,omitempty"`
+	Details     string   `json:"details,omitempty"`
+	GitExitCode int      `json:"git_exit_code,omitempty"`
+	Completed   []string `json:"completed,omitempty"`
+	Resume      string   `json:"resume,omitempty"`
 }
 
 type failure struct {
@@ -41,11 +49,27 @@ type failure struct {
 	hint        string
 	details     string
 	gitExitCode int
+	completed   []string
+	resume      string
 }
 
 func (e appError) Error() string {
 	return e.message
 }
+
+// partialError annotates a failure that happened after the command had already
+// changed something durable. It carries no diagnosis of its own: the wrapped
+// error keeps that job, and this only records what survived and how to pick up
+// from there.
+type partialError struct {
+	err       error
+	completed []string
+	resume    string
+}
+
+func (e partialError) Error() string { return e.err.Error() }
+
+func (e partialError) Unwrap() error { return e.err }
 
 func Execute(version string) {
 	opts := &Options{}
@@ -120,6 +144,8 @@ func writeError(opts *Options, out io.Writer, errOut io.Writer, err error) {
 			Hint:        f.hint,
 			Details:     f.details,
 			GitExitCode: f.gitExitCode,
+			Completed:   f.completed,
+			Resume:      f.resume,
 		})
 		return
 	}
@@ -128,12 +154,29 @@ func writeError(opts *Options, out io.Writer, errOut io.Writer, err error) {
 	if f.hint != "" {
 		_, _ = fmt.Fprintf(errOut, "Hint: %s\n", f.hint)
 	}
+	if len(f.completed) > 0 {
+		_, _ = fmt.Fprintf(errOut, "Completed: %s\n", strings.Join(f.completed, "; "))
+	}
+	if f.resume != "" {
+		_, _ = fmt.Fprintf(errOut, "Resume: %s\n", f.resume)
+	}
 	if f.details != "" {
 		_, _ = fmt.Fprintf(errOut, "Details: %s\n", f.details)
 	}
 }
 
 func describeError(err error) failure {
+	// Matched before anything else, and only for the annotation: the real
+	// diagnosis comes from describing the error underneath, so a partial failure
+	// reports the same message, hint and details it would have without the
+	// wrapper.
+	var pae partialError
+	if errors.As(err, &pae) {
+		f := describeError(pae.err)
+		f.completed, f.resume = pae.completed, pae.resume
+		return f
+	}
+
 	var ae appError
 	if errors.As(err, &ae) {
 		return failure{message: ae.message, hint: ae.hint, details: ae.details}

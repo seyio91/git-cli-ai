@@ -144,6 +144,47 @@ func TestPostJSONMapsStatusToActionableHint(t *testing.T) {
 	}
 }
 
+// SC-34 — an HTML error page is not a provider API error. A corporate gateway
+// with the VPN down answers 403 with one, and reading that as a rejected key
+// sends the caller off rotating a credential that was working fine. Both signals
+// are covered: the content type, and the body sniff for a gateway that mislabels
+// it.
+func TestPostJSONDiagnosesAnHTMLGatewayPage(t *testing.T) {
+	const page = `<html><head><title>403 Forbidden</title></head><body>Forbidden</body></html>`
+
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		status      int
+	}{
+		{"html content type", "text/html", http.StatusForbidden},
+		{"mislabelled as json", "application/json", http.StatusForbidden},
+		{"gateway 502", "text/html; charset=utf-8", http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, page)
+			}))
+			t.Cleanup(server.Close)
+
+			err := postJSON(context.Background(), "test", server.URL, http.Header{}, map[string]any{}, &struct{}{})
+			if err == nil {
+				t.Fatalf("expected an error for HTTP %d", tc.status)
+			}
+
+			pe := providerError(t, err)
+			if strings.Contains(pe.Hint, "api_key_env") {
+				t.Errorf("an HTML page was diagnosed as a credential problem: %q", pe.Hint)
+			}
+			if !strings.Contains(pe.Hint, "VPN") {
+				t.Errorf("hint = %q, want it to point at the network path", pe.Hint)
+			}
+		})
+	}
+}
+
 // A body that is not the expected shape is a structured error, not a panic and
 // not a silently zero-valued result.
 func TestPostJSONReportsUndecodableBody(t *testing.T) {

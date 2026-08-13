@@ -19,10 +19,14 @@ type shipResult struct {
 	URL           string `json:"url"`
 	CreatedBranch bool   `json:"created_branch"`
 	Existing      bool   `json:"existing"`
+	Draft         bool   `json:"draft"`
 	Pushed        bool   `json:"pushed"`
 	DryRun        bool   `json:"dry_run"`
 	Error         string `json:"error"`
 	Hint          string `json:"hint"`
+
+	Completed []string `json:"completed"`
+	Resume    string   `json:"resume"`
 }
 
 func decodeShip(t *testing.T, r result) shipResult {
@@ -122,6 +126,120 @@ func TestSC18b_DefaultBranchCreatesBranchBeforeCommitting(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(ghCalls(t, log), "\n"), "pr create") {
 		t.Errorf("gh pr create was not invoked")
+	}
+}
+
+// SC-35 — ship is not atomic, and a failure after the push has to say so. The
+// branch, the commit and the push have all landed by the time the forge is
+// asked for a pull request; an error naming only that last step reads like a
+// total failure, and a blind retry commits a second time.
+func TestSC35_FailureAfterPushReportsWhatLanded(t *testing.T) {
+	repo := newRepo(t)
+	withRemote(t, repo)
+	def := pinDefaultBranch(t, repo)
+
+	writeFile(t, repo, "a.txt", "a\n")
+	mustGit(t, repo, "add", "a.txt")
+
+	// pr create is the step that fails; everything before it succeeds, which is
+	// exactly the shape of the incident this reports on.
+	writeFakeGH(t, repo, `case "$1 $2" in
+  "pr list") echo "[]" ;;
+  "repo view") echo '{"defaultBranchRef":{"name":"`+def+`"}}' ;;
+  "pr create") echo "the forge said no" >&2; exit 1 ;;
+  *) echo "unexpected gh invocation: $@" >&2; exit 64 ;;
+esac`)
+
+	res := run(t, repo, "ship", "-m", "feat(x): add a thing", "--json")
+	if res.exitCode == 0 {
+		t.Fatalf("exit = 0, want nonzero when pr create fails (stdout %q)", res.stdout)
+	}
+
+	ship := decodeShip(t, res)
+	if ship.Error == "" {
+		t.Errorf("the underlying failure is missing from the payload: %s", res.stdout)
+	}
+	if len(ship.Completed) == 0 {
+		t.Fatalf("no completed steps reported despite a branch, commit and push: %s", res.stdout)
+	}
+
+	joined := strings.Join(ship.Completed, "; ")
+	for _, want := range []string{"created branch", "committed", "pushed"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("completed does not mention %q: %q", want, joined)
+		}
+	}
+	if ship.Resume != "git-cli pr" {
+		t.Errorf("resume = %q, want the pull request half of ship", ship.Resume)
+	}
+
+	// The work really is on disk and on the remote — the report is not
+	// aspirational.
+	branch := currentBranch(t, repo)
+	if branch == def {
+		t.Fatalf("still on %s; the branch was never created", def)
+	}
+	if out := strings.TrimSpace(mustGit(t, repo, "log", "-1", "--pretty=%s")); out != "feat(x): add a thing" {
+		t.Errorf("tip subject = %q, want the committed message", out)
+	}
+	if remote := strings.TrimSpace(mustGit(t, repo, "rev-parse", "refs/remotes/origin/"+branch)); remote == "" {
+		t.Errorf("branch %s is not on the remote despite completed saying it was pushed", branch)
+	}
+}
+
+// SC-35 — the resume command carries the pull request flags the run was given,
+// so following it does not quietly produce a different pull request.
+func TestSC35_ResumeCarriesThePullRequestFlags(t *testing.T) {
+	repo := newRepo(t)
+	withRemote(t, repo)
+	def := pinDefaultBranch(t, repo)
+
+	writeFile(t, repo, "a.txt", "a\n")
+	mustGit(t, repo, "add", "a.txt")
+
+	writeFakeGH(t, repo, `case "$1 $2" in
+  "pr list") echo "[]" ;;
+  "repo view") echo '{"defaultBranchRef":{"name":"`+def+`"}}' ;;
+  "pr create") echo "the forge said no" >&2; exit 1 ;;
+  *) echo "unexpected gh invocation: $@" >&2; exit 64 ;;
+esac`)
+
+	res := run(t, repo, "ship", "-m", "feat(x): add a thing",
+		"--draft", "--base", def, "--title", "A title: with punctuation", "--body", "## What\nA thing.\n", "--json")
+	if res.exitCode == 0 {
+		t.Fatalf("exit = 0, want nonzero when pr create fails (stdout %q)", res.stdout)
+	}
+
+	resume := decodeShip(t, res).Resume
+	for _, want := range []string{"git-cli pr", "--draft", "--base " + def, "--title", "A title: with punctuation", "--body"} {
+		if !strings.Contains(resume, want) {
+			t.Errorf("resume = %q, want it to carry %q", resume, want)
+		}
+	}
+}
+
+// SC-35 — a failure before anything durable happens carries no partial-progress
+// annotation. Reporting an empty resume path on a clean failure would train a
+// caller to ignore the field.
+func TestSC35_FailureBeforeAnyMutationReportsNoProgress(t *testing.T) {
+	repo := newRepo(t)
+	withRemote(t, repo)
+	pinDefaultBranch(t, repo)
+
+	writeFile(t, repo, "a.txt", "a\n")
+	mustGit(t, repo, "add", "a.txt")
+	writeFakeGH(t, repo, ghCreateSucceeds)
+
+	// Contradictory body flags fail validation before anything is staged,
+	// branched or committed.
+	res := run(t, repo, "ship", "-m", "feat(x): add a thing", "--body", "x", "--intent", "y", "--json")
+	if res.exitCode == 0 {
+		t.Fatal("exit = 0, want nonzero for contradictory body flags")
+	}
+
+	ship := decodeShip(t, res)
+	if len(ship.Completed) != 0 || ship.Resume != "" {
+		t.Errorf("a pre-mutation failure reported progress: completed=%v resume=%q", ship.Completed, ship.Resume)
 	}
 }
 

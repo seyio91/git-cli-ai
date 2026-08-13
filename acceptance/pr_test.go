@@ -214,30 +214,53 @@ esac`)
 	}
 }
 
-// SC-27 — a body that already fills the template is used verbatim and costs no
-// provider call.
-func TestSC27_TemplateFillingBodyIsUsedVerbatim(t *testing.T) {
+// SC-27 — a supplied body is authoritative: posted byte for byte, whatever shape
+// it is in, and costing no provider call. The body here deliberately uses none of
+// the template's section names, because that is exactly the case the old
+// heading-match rule reclassified as intent and sent off to be rewritten.
+func TestSC27_SuppliedBodyIsPostedVerbatim(t *testing.T) {
 	repo := newRepo(t)
 	withRemote(t, repo)
 	onFeatureBranch(t, repo)
-	writeFakeGH(t, repo, ghCreateSucceeds)
+	bodyPath := writeFakeGHCapturingBody(t, repo, prURL)
 
 	fake, providerLog := writeFakeProvider(t, repo, "fake-provider", "echo 'should never run'")
 	writeRepoConfig(t, repo, cliProviderConfig(fake))
 
-	body := "## Summary\nDoes the thing.\n\n## Changes\n- a.txt\n\n## Task\nnone\n\n## Plan\nnone\n\n## Testing\nran the suite\n"
+	body := "## What\nStops the widget exploding.\n\n## Why the template change\nBecause it exploded.\n\n## Not in this PR\nThe sprocket rewrite.\n"
 	res := run(t, repo, "pr", "--body", body, "--json")
 	if res.exitCode != 0 {
 		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
 	}
 	if calls := providerCalls(t, providerLog); calls != 0 {
-		t.Fatalf("provider called %d times for a template-filling body, want 0", calls)
+		t.Fatalf("provider called %d times for a supplied body, want 0", calls)
+	}
+	if posted := postedBody(t, bodyPath); posted != body {
+		t.Fatalf("the posted body is not the supplied bytes:\nwant:\n%s\ngot:\n%s", body, posted)
 	}
 }
 
-// SC-27 — a freeform body is rendered by the generator, grounded on the text
-// the author supplied.
-func TestSC27_FreeformBodyIsRenderedFromSuppliedIntent(t *testing.T) {
+// SC-27 — the authoritative path never reaches the provider at all, so a caller
+// who has already written the body does not need a reachable one. This is the
+// property that keeps a VPN outage off the critical path of opening a pull
+// request: the configured provider here cannot run.
+func TestSC27_SuppliedBodyNeedsNoReachableProvider(t *testing.T) {
+	repo := newRepo(t)
+	withRemote(t, repo)
+	onFeatureBranch(t, repo)
+	writeFakeGH(t, repo, ghCreateSucceeds)
+
+	writeRepoConfig(t, repo, cliProviderConfig(filepath.Join(repo, "no-such-provider")))
+
+	res := run(t, repo, "pr", "--body", "## What\nA thing.\n", "--json")
+	if res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 with an unrunnable provider (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+	}
+}
+
+// SC-27 — --intent is the flag that asks for generation, grounded on the text
+// the author supplied. It is what --body used to do by accident.
+func TestSC27_IntentIsRenderedByTheGenerator(t *testing.T) {
 	repo := newRepo(t)
 	withRemote(t, repo)
 	onFeatureBranch(t, repo)
@@ -246,15 +269,91 @@ func TestSC27_FreeformBodyIsRenderedFromSuppliedIntent(t *testing.T) {
 	fake, providerLog := writeFakeProvider(t, repo, "fake-provider", "echo '## Summary\nrendered'")
 	writeRepoConfig(t, repo, cliProviderConfig(fake))
 
-	res := run(t, repo, "pr", "--body", "made the widget stop exploding", "--json")
+	res := run(t, repo, "pr", "--intent", "made the widget stop exploding", "--json")
 	if res.exitCode != 0 {
 		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
 	}
 	if calls := providerCalls(t, providerLog); calls != 1 {
-		t.Fatalf("provider called %d times for a freeform body, want exactly 1", calls)
+		t.Fatalf("provider called %d times for --intent, want exactly 1", calls)
 	}
 	if prompt := providerPrompts(t, providerLog); !strings.Contains(prompt, "made the widget stop exploding") {
 		t.Fatalf("the prompt did not carry the supplied intent: %q", prompt)
+	}
+}
+
+// SC-27 — --body and --intent are contradictory instructions, so supplying both
+// is a caller error rather than a precedence question to resolve silently.
+func TestSC27_BodyAndIntentAreMutuallyExclusive(t *testing.T) {
+	repo := newRepo(t)
+	withRemote(t, repo)
+	onFeatureBranch(t, repo)
+	writeFakeGH(t, repo, ghCreateSucceeds)
+
+	for _, tc := range []struct{ name, flag string }{
+		{"inline", "--body"},
+		{"file", "--body-file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := run(t, repo, "pr", tc.flag, "x", "--intent", "y", "--json")
+			if res.exitCode == 0 {
+				t.Fatalf("exit = 0, want nonzero for %s with --intent", tc.flag)
+			}
+			if !strings.Contains(res.stdout, tc.flag) || !strings.Contains(res.stdout, "--intent") {
+				t.Fatalf("the error does not name both flags: %s", res.stdout)
+			}
+		})
+	}
+}
+
+// SC-33 — --draft opens the pull request in the forge's not-ready state, so a
+// deliberately gated change does not have to be opened ready and walked back.
+func TestSC33_DraftOpensADraftPullRequest(t *testing.T) {
+	repo := newRepo(t)
+	withRemote(t, repo)
+	onFeatureBranch(t, repo)
+	log := writeFakeGH(t, repo, ghCreateSucceeds)
+
+	res := run(t, repo, "pr", "--draft", "--body", "## What\nA thing.\n", "--json")
+	if res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+	}
+
+	found := false
+	for _, call := range ghCalls(t, log) {
+		if strings.HasPrefix(call, "pr create") {
+			found = true
+			if !strings.Contains(call, "--draft") {
+				t.Fatalf("gh pr create ran without --draft: %s", call)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("gh pr create never ran")
+	}
+	if !strings.Contains(res.stdout, `"draft":true`) {
+		t.Errorf("payload does not report the draft state: %s", res.stdout)
+	}
+}
+
+// SC-33 — without the flag nothing is passed, so a forge default of "ready" is
+// left alone rather than being set explicitly.
+func TestSC33_NoDraftFlagPassesNoDraftArgument(t *testing.T) {
+	repo := newRepo(t)
+	withRemote(t, repo)
+	onFeatureBranch(t, repo)
+	log := writeFakeGH(t, repo, ghCreateSucceeds)
+
+	res := run(t, repo, "pr", "--body", "## What\nA thing.\n", "--json")
+	if res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+	}
+	for _, call := range ghCalls(t, log) {
+		if strings.Contains(call, "--draft") {
+			t.Fatalf("--draft was passed without being asked for: %s", call)
+		}
+	}
+	if strings.Contains(res.stdout, "draft") {
+		t.Errorf("payload mentions draft for a ready pull request: %s", res.stdout)
 	}
 }
 
@@ -276,7 +375,7 @@ func TestSC29_BodyFileIsRead(t *testing.T) {
 		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
 	}
 	if calls := providerCalls(t, providerLog); calls != 0 {
-		t.Fatalf("provider called %d times, want 0 for a template-filling file", calls)
+		t.Fatalf("provider called %d times, want 0 for a supplied body file", calls)
 	}
 }
 
