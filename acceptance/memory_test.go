@@ -308,8 +308,13 @@ func TestSC17ePerBlockCapActsIndependentlyOfTheBudget(t *testing.T) {
 	}
 }
 
-// SC-17f — a pinned repo fills {{task}} and {{plan}} in the PR body.
-func TestSC17fPRBodyCarriesTaskAndPlan(t *testing.T) {
+// SC-17f — a pinned repo does not surface its task or plan in the PR body, even
+// though both are loaded. The memory context is input to describing the diff,
+// not output a reviewer has to read past: the active task is whatever the author
+// is working towards, which is routinely unrelated to the diff under review, and
+// a step-by-step plan is a process artifact that already lives in the memory
+// tree.
+func TestSC17fPRBodyOmitsTaskAndPlan(t *testing.T) {
 	repo, memRoot := pinnedRepo(t)
 	mustGit(t, repo, "commit", "-qm", "feat: add the widget")
 	withRemote(t, repo)
@@ -322,14 +327,36 @@ func TestSC17fPRBodyCarriesTaskAndPlan(t *testing.T) {
 	}
 
 	body := postedBody(t, bodyPath)
-	if !strings.Contains(body, "## Task") {
-		t.Errorf("PR body has no Task section despite a pinned project:\n%s", body)
+	for _, gone := range []string{"## Task", "## Plan", "Phase 2 — build the widget"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("PR body surfaces %q from project memory:\n%s", gone, body)
+		}
 	}
-	if !strings.Contains(body, "Phase 2 — build the widget") {
-		t.Errorf("PR body did not carry the active task:\n%s", body)
+}
+
+// SC-17f — {{task}} and {{plan}} left the default template, not the renderer. A
+// repository that wants them in its pull requests asks for them by name, and the
+// memory context still supplies the values.
+func TestSC17fCustomTemplateStillCarriesTaskAndPlan(t *testing.T) {
+	repo, memRoot := pinnedRepo(t)
+	mustGit(t, repo, "commit", "-qm", "feat: add the widget")
+	withRemote(t, repo)
+	onFeatureBranch(t, repo)
+	bodyPath := writeFakeGHCapturingBody(t, repo, prURL)
+
+	writeFileAt(t, filepath.Join(repo, "pr-template.md"), "## Summary\n{{summary}}\n\n## Task\n{{task}}\n\n## Plan\n{{plan}}\n")
+	writeRepoConfig(t, repo, "[pr]\ntemplate = \"pr-template.md\"\n")
+
+	r := runWith(t, repo, memEnv(memRoot), "pr")
+	if r.exitCode != 0 {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", r.exitCode, r.stdout, r.stderr)
 	}
-	if !strings.Contains(body, "widget") {
-		t.Errorf("PR body did not carry the plan name:\n%s", body)
+
+	body := postedBody(t, bodyPath)
+	for _, kept := range []string{"## Task", "Phase 2 — build the widget", "## Plan", "widget"} {
+		if !strings.Contains(body, kept) {
+			t.Errorf("a template that asks for %q did not get it:\n%s", kept, body)
+		}
 	}
 }
 

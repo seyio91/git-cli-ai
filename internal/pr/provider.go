@@ -19,6 +19,10 @@ type Request struct {
 	Head  string
 	Title string
 	Body  string
+	// Draft opens the pull request in whatever "not ready for review" state the
+	// forge offers. Every forge worth supporting has one, so it belongs here
+	// rather than in a GitHub-specific field.
+	Draft bool
 }
 
 // Existing describes an open pull request already on a branch. Base may be
@@ -121,13 +125,18 @@ func (g GH) DefaultBranch(ctx context.Context) (string, error) {
 // OpenPR creates the pull request and returns its URL. The body travels on
 // stdin via `--body-file -` so a long body never has to survive an argv limit.
 func (g GH) OpenPR(ctx context.Context, req Request) (string, error) {
-	out, err := g.run(ctx, req.Body,
+	args := []string{
 		"pr", "create",
 		"--base", req.Base,
 		"--head", req.Head,
 		"--title", req.Title,
 		"--body-file", "-",
-	)
+	}
+	if req.Draft {
+		args = append(args, "--draft")
+	}
+
+	out, err := g.run(ctx, req.Body, args...)
 	if err != nil {
 		return "", err
 	}

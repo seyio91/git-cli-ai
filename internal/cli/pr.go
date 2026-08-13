@@ -20,7 +20,9 @@ type prOptions struct {
 	title    string
 	body     string
 	bodyFile string
+	intent   string
 	base     string
+	draft    bool
 }
 
 type prPayload struct {
@@ -29,6 +31,10 @@ type prPayload struct {
 	Base     string `json:"base"`
 	Title    string `json:"title"`
 	Existing bool   `json:"existing,omitempty"`
+	// Draft reports the state this run asked the forge for. It is only ever set
+	// on a run that created the pull request: converging on an existing one
+	// reports existing instead, because nothing was created to be a draft.
+	Draft bool `json:"draft,omitempty"`
 	// Pushed reports whether this run moved commits to the remote, so a caller
 	// can tell a converged re-run from a no-op one.
 	Pushed bool `json:"pushed,omitempty"`
@@ -46,9 +52,11 @@ func NewPRCommand(root *Options, out io.Writer) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.title, "title", "", "pull request title")
-	cmd.Flags().StringVar(&opts.body, "body", "", "pull request body, or the intent to render into the template")
-	cmd.Flags().StringVar(&opts.bodyFile, "body-file", "", "read the body from a file")
+	cmd.Flags().StringVar(&opts.body, "body", "", "pull request body, used verbatim")
+	cmd.Flags().StringVar(&opts.bodyFile, "body-file", "", "read the verbatim body from a file")
+	cmd.Flags().StringVar(&opts.intent, "intent", "", "describe the change and let the provider render it into the template")
 	cmd.Flags().StringVar(&opts.base, "base", "", "base branch (defaults to the repository's default branch)")
+	cmd.Flags().BoolVar(&opts.draft, "draft", false, "open the pull request as a draft")
 
 	return cmd
 }
@@ -136,30 +144,43 @@ func runPR(ctx context.Context, root *Options, opts *prOptions, out io.Writer) e
 	// The dry-run return sits before resolveBody: a preview must cost no
 	// provider call, and the body it would generate is not part of the preview.
 	if root.DryRun {
-		return writePRPayload(out, root.JSON, prPayload{Branch: branch, Base: base, Title: title, DryRun: true})
+		return writePRPayload(out, root.JSON, prPayload{Branch: branch, Base: base, Title: title, Draft: opts.draft, DryRun: true})
 	}
 
-	body, err = resolveBody(ctx, resolved, repo, template, body, title, base)
+	body, err = resolveBody(ctx, resolved, repo, template, body, opts.intent, title, base)
 	if err != nil {
 		return err
 	}
 
-	url, err := provider.OpenPR(ctx, pr.Request{Base: base, Head: branch, Title: title, Body: body})
+	url, err := provider.OpenPR(ctx, pr.Request{Base: base, Head: branch, Title: title, Body: body, Draft: opts.draft})
 	if err != nil {
 		return err
 	}
 
-	return writePRPayload(out, root.JSON, prPayload{URL: url, Branch: branch, Base: base, Title: title})
+	return writePRPayload(out, root.JSON, prPayload{URL: url, Branch: branch, Base: base, Title: title, Draft: opts.draft})
 }
 
-// suppliedBody resolves the two body flags into one string. They are mutually
+// suppliedBody resolves the body flags into one string. They are mutually
 // exclusive: silently preferring one would make a scripted caller's mistake
-// invisible.
+// invisible. --intent contradicts both of them outright — one says "use this
+// text", the other says "write something from this text" — so supplying both is
+// a caller error rather than a precedence question.
 func suppliedBody(opts *prOptions) (string, error) {
 	if opts.body != "" && opts.bodyFile != "" {
 		return "", fail(
 			"--body and --body-file are mutually exclusive",
 			"pass the body inline with --body, or its path with --body-file, but not both",
+		)
+	}
+
+	if opts.intent != "" && (opts.body != "" || opts.bodyFile != "") {
+		supplied := "--body"
+		if opts.bodyFile != "" {
+			supplied = "--body-file"
+		}
+		return "", fail(
+			fmt.Sprintf("%s and --intent are mutually exclusive", supplied),
+			fmt.Sprintf("%s is used verbatim, while --intent is written up for you; pass whichever you meant, not both", supplied),
 		)
 	}
 
@@ -237,20 +258,34 @@ func prTitle(ctx context.Context, opts *prOptions, repo gitrepo.Repository, bran
 	return subjects[0], nil
 }
 
-// resolveBody applies the settled rule: a supplied body that already fills the
-// template is used verbatim and costs nothing; one that does not is intent to
-// be rendered into the template, grounded on that text; no body at all is
-// generated from the diff.
+// resolveBody applies the settled rule: a supplied body is authoritative and is
+// used exactly as given; --intent is text to be written up into the template,
+// grounded on what it says; neither is generated from the diff alone.
+//
+// An authoritative body returns before anything reads the config's provider,
+// resolves a generator, or touches the network. That is the point of it: a
+// caller who has already decided what the pull request says should not need a
+// reachable provider — or a VPN, or a valid key — to post it. The heading-match
+// heuristic this replaced could reclassify a finished hand-written body as
+// intent and silently discard sections of it, which is a correctness failure,
+// not a style one.
+//
+// The asymmetry with commit's conformance gate is deliberate. A commit message
+// is checked against conventional-commits, a crisp and checkable spec, so
+// "does this conform" has a real answer. A pull request body's only structure is
+// its headings, and matching those is far too weak a signal to justify
+// overwriting prose a person wrote.
 func resolveBody(
 	ctx context.Context,
 	resolved appconfig.Resolved,
 	repo gitrepo.Repository,
 	template pr.Template,
 	supplied string,
+	intent string,
 	title string,
 	base string,
 ) (string, error) {
-	if supplied != "" && template.Fills(supplied) {
+	if supplied != "" {
 		return supplied, nil
 	}
 
@@ -261,7 +296,7 @@ func resolveBody(
 	// than failing — an unopenable pull request is a worse outcome than a
 	// terse one.
 	if resolved.Sources["ai.provider"] == appconfig.LayerDefault {
-		return offlineBody(ctx, repo, template, supplied, title, base, mem)
+		return offlineBody(ctx, repo, template, intent, title, base, mem)
 	}
 
 	diff, err := branchDiff(ctx, repo, base)
@@ -279,7 +314,7 @@ func resolveBody(
 		Style:   template.Text,
 		Diff:    diff,
 		Context: withMemory(prContext(ctx, repo, title, base), mem),
-		Intent:  supplied,
+		Intent:  intent,
 	})
 	if err != nil {
 		return "", err
@@ -289,11 +324,13 @@ func resolveBody(
 
 // offlineBody fills the template from the commit log. Placeholders with no
 // local source resolve to nothing, which the template is required to render
-// cleanly.
-func offlineBody(ctx context.Context, repo gitrepo.Repository, template pr.Template, supplied string, title string, base string, mem memory.Context) (string, error) {
+// cleanly. {{task}} and {{plan}} are still supplied even though the default
+// template no longer asks for them: a repository that wants them names them in
+// its own pr.template.
+func offlineBody(ctx context.Context, repo gitrepo.Repository, template pr.Template, intent string, title string, base string, mem memory.Context) (string, error) {
 	subjects := branchSubjects(ctx, repo, base)
 
-	summary := supplied
+	summary := intent
 	if summary == "" {
 		summary = title
 	}
@@ -358,6 +395,15 @@ func prContext(ctx context.Context, repo gitrepo.Repository, title string, base 
 	return blocks
 }
 
+// draftLabel prefixes a dry-run line so a preview says which state it would open
+// in. It carries its own trailing space so the non-draft case adds nothing.
+func draftLabel(draft bool) string {
+	if draft {
+		return "draft "
+	}
+	return ""
+}
+
 func writePRPayload(out io.Writer, asJSON bool, payload prPayload) error {
 	if asJSON {
 		return json.NewEncoder(out).Encode(payload)
@@ -365,11 +411,13 @@ func writePRPayload(out io.Writer, asJSON bool, payload prPayload) error {
 
 	switch {
 	case payload.DryRun:
-		_, _ = fmt.Fprintf(out, "dry-run: would open %s -> %s\n", payload.Branch, payload.Base)
+		_, _ = fmt.Fprintf(out, "dry-run: would open %s%s -> %s\n", draftLabel(payload.Draft), payload.Branch, payload.Base)
 		_, _ = fmt.Fprintf(out, "title: %s\n", payload.Title)
 		return nil
 	case payload.Existing:
 		_, _ = fmt.Fprintln(out, "pull request already open")
+	case payload.Draft:
+		_, _ = fmt.Fprintln(out, "draft pull request opened")
 	default:
 		_, _ = fmt.Fprintln(out, "pull request opened")
 	}

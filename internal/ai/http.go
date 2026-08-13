@@ -77,7 +77,7 @@ func postJSON(ctx context.Context, provider string, url string, header http.Head
 		return &ProviderError{
 			Provider: provider,
 			Message:  fmt.Sprintf("ai provider %q returned HTTP %d", provider, resp.StatusCode),
-			Hint:     statusHint(provider, resp.StatusCode),
+			Hint:     statusHint(provider, resp.StatusCode, resp.Header.Get("Content-Type"), payload),
 			Details:  truncate(strings.TrimSpace(string(payload)), maxErrorBody),
 		}
 	}
@@ -120,7 +120,21 @@ func truncate(text string, limit int) string {
 	return text[:limit] + "… (truncated)"
 }
 
-func statusHint(provider string, status int) string {
+func statusHint(provider string, status int, contentType string, body []byte) string {
+	// An HTML body means the response was not written by the provider's API, so
+	// the status code describes whatever intercepted the request rather than
+	// anything about the request itself. A corporate gateway with the VPN down
+	// answers 403 with an HTML error page; reading that as a rejected key sends
+	// the caller off rotating a credential that was never the problem. Checked
+	// ahead of every status because the misdiagnosis is not specific to one: an
+	// HTML 502 from the same gateway means the same thing.
+	if isHTMLPage(contentType, body) {
+		return fmt.Sprintf(
+			"the response was an HTML page rather than an API error, so the request probably never reached ai provider %q; check the network path (VPN, proxy, DNS) before changing any credential",
+			provider,
+		)
+	}
+
 	switch {
 	case status == http.StatusUnauthorized, status == http.StatusForbidden:
 		return fmt.Sprintf("the key in the variable named by api_key_env was rejected; check that it is current and authorised for ai provider %q", provider)
@@ -132,6 +146,17 @@ func statusHint(provider string, status int) string {
 		return "the provider reported a server-side failure; retry shortly, or supply --message to commit without a provider call"
 	}
 	return fmt.Sprintf("check the request settings in [ai.providers.%s] against the provider's API documentation", provider)
+}
+
+// isHTMLPage reports whether a response body is a web page rather than an API
+// payload. The content type is the authoritative signal, but a gateway that
+// omits or mislabels it still sends a body opening with a tag or a doctype, so
+// the sniff is a fallback rather than a nicety.
+func isHTMLPage(contentType string, body []byte) bool {
+	if strings.Contains(strings.ToLower(contentType), "html") {
+		return true
+	}
+	return strings.HasPrefix(strings.TrimSpace(string(body)), "<")
 }
 
 func requireModel(provider string, model string) error {

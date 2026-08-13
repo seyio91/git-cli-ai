@@ -8,20 +8,17 @@ import (
 	"strings"
 )
 
-// DefaultTemplate is the built-in body structure. Its heading lines are what a
-// supplied body is checked against, so the structure and the conformance rule
-// cannot drift apart.
+// DefaultTemplate is the built-in body structure, shaped for the person reading
+// the pull request rather than the person who wrote it. A reviewer is deciding
+// whether the diff is correct; the author's task framing and step-by-step plan
+// are process artifacts that belong wherever they already live, so neither has a
+// section here. {{task}} and {{plan}} remain substitutable for a template that
+// asks for them by name — they are absent from the default, not unsupported.
 const DefaultTemplate = `## Summary
 {{summary}}
 
 ## Changes
 {{changes}}
-
-## Task
-{{task}}
-
-## Plan
-{{plan}}
 
 ## Testing
 {{testing}}
@@ -49,113 +46,11 @@ func LoadTemplate(path string) (Template, error) {
 	return Template{Text: string(data)}, nil
 }
 
-// Headings returns the heading lines the template defines, normalised. Lines
-// inside fenced code are skipped: a `# comment` in a shell snippet is not a
-// section an author has to reproduce.
-func (t Template) Headings() []string {
-	var headings []string
-	fenced := false
-
-	for _, line := range strings.Split(t.Text, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "```") {
-			fenced = !fenced
-			continue
-		}
-		if fenced || !strings.HasPrefix(line, "#") {
-			continue
-		}
-		if h := normaliseHeading(line); h != "" {
-			headings = append(headings, h)
-		}
-	}
-	return headings
-}
-
-// normaliseHeading reduces a heading to the part that carries meaning: the text
-// itself, lowercased. Level, spacing and trailing punctuation are cosmetic, and
-// treating them as structural is not a free mistake — a near-miss sends a
-// finished body to the generator, which replaces it.
-func normaliseHeading(line string) string {
-	line = strings.TrimLeft(line, "#")
-	line = strings.TrimSpace(line)
-	line = strings.TrimRight(line, ":：.-")
-	return strings.ToLower(strings.Join(strings.Fields(line), " "))
-}
-
-// Fills reports whether body is a finished instance of this template: every
-// section the template defines is present *and* carries content of its own.
-//
-// The content requirement is what stops the template itself from qualifying.
-// Feeding the raw template back in — which is exactly what happens when someone
-// points --body-file at the repo's PR template — matches every heading, and a
-// heading-only check would post `{{summary}}` to the forge verbatim. A section
-// whose only content is the placeholder it was meant to replace is not filled.
-// Absence is not tolerated here, deliberately. A body that omits sections is
-// treated as intent to be rendered, which is what lets someone pass a rough
-// --body and get it shaped into the house format. That rule collides with
-// wanting Render's own output to round-trip: with no memory project, Render
-// drops Task, Plan and Testing, leaving exactly the Summary+Changes shape this
-// check must reject. The rendering rule wins, because it is the one a human
-// relies on; a rendered body fed back through --body-file is regenerated rather
-// than reused. See the plan's SC-17g note.
-func (t Template) Fills(body string) bool {
-	headings := t.Headings()
-	if len(headings) == 0 {
-		// No structure to conform to; nothing can fail to match it.
-		return true
-	}
-
-	sections := sectionContent(body)
-	for _, heading := range headings {
-		content, ok := sections[heading]
-		if !ok || content == "" {
-			return false
-		}
-	}
-	return true
-}
-
-// sectionContent maps each normalised heading in body to the non-empty,
-// non-placeholder text beneath it.
-func sectionContent(body string) map[string]string {
-	sections := make(map[string]string)
-	current := ""
-	fenced := false
-
-	for _, raw := range strings.Split(body, "\n") {
-		line := strings.TrimSpace(raw)
-		if strings.HasPrefix(line, "```") {
-			fenced = !fenced
-		}
-		if !fenced && strings.HasPrefix(line, "#") {
-			current = normaliseHeading(line)
-			if _, seen := sections[current]; !seen {
-				sections[current] = ""
-			}
-			continue
-		}
-		if current == "" || line == "" || isPlaceholder(line) {
-			continue
-		}
-		sections[current] += line
-	}
-	return sections
-}
-
-// isPlaceholder reports whether a line is nothing but an unsubstituted
-// {{placeholder}}.
-func isPlaceholder(line string) bool {
-	return strings.HasPrefix(line, "{{") && strings.HasSuffix(line, "}}") &&
-		!strings.Contains(strings.TrimSuffix(strings.TrimPrefix(line, "{{"), "}}"), "{{")
-}
-
 // Render substitutes {{placeholder}} values and drops any section left with no
-// content. {{task}} and {{plan}} are empty in every repository that is not
-// pinned to a memory project, which is most of them; emitting `## Task` above
-// nothing puts a hollow heading in front of every reviewer. Dropping the
-// heading too also means the result satisfies Fills, so a rendered body fed
-// back through --body-file is recognised as finished rather than regenerated.
+// content. A placeholder with no local source is the ordinary case — {{testing}}
+// has none on the offline path, and {{task}}/{{plan}} are empty in every
+// repository that is not pinned to a memory project — and emitting a heading
+// above nothing puts a hollow section in front of every reviewer.
 //
 // Section boundaries come from the template, not from the substituted text: a
 // value that happens to begin with # is content, not a new heading.
