@@ -55,6 +55,25 @@ func LoadTemplate(path string) (Template, error) {
 // Section boundaries come from the template, not from the substituted text: a
 // value that happens to begin with # is content, not a new heading.
 func (t Template) Render(values map[string]string) string {
+	return render(t.Text, values)
+}
+
+// StripPlaceholders drops any {{placeholder}} left in an already-written body,
+// along with the section it leaves empty.
+//
+// A generated body needs this even though Render exists. Render substitutes into
+// the template, so a placeholder with no value never reaches the output; but the
+// provider is handed that same template as the style to follow, and a model that
+// has nothing to say for a section can echo the placeholder back as prose rather
+// than omitting it. At that point it is body text, not a placeholder awaiting a
+// value, so nothing downstream would remove it and `{{testing}}` ships to the
+// reviewer. Asking the model more nicely is not a fix: the body has to be
+// correct whether or not it complies.
+func StripPlaceholders(body string) string {
+	return render(body, nil)
+}
+
+func render(text string, values map[string]string) string {
 	var out, section []string
 	inSection, hasContent, fenced := false, false, false
 
@@ -65,7 +84,7 @@ func (t Template) Render(values map[string]string) string {
 		section, hasContent = nil, false
 	}
 
-	for _, raw := range strings.Split(t.Text, "\n") {
+	for _, raw := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(raw)
 		if strings.HasPrefix(trimmed, "```") {
 			fenced = !fenced

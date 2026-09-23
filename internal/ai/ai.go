@@ -73,6 +73,9 @@ const prBodyPreamble = `Write the pull request body for the change described bel
 template that follows. Keep its headings and their order, replace every
 {{placeholder}} with real content, and leave a placeholder's section empty when
 nothing is known about it rather than inventing something.
+Be brief. A reviewer needs what changed and why, not a design document: aim for
+a few sentences or a short list per section. Do not restate what the diff
+already shows, and do not add headings the template did not ask for.
 Reply with the body itself and nothing else: no preamble, no commentary, no
 code fences.`
 
