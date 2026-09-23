@@ -71,7 +71,7 @@ func runShip(ctx context.Context, root *Options, opts *shipOptions, out io.Write
 	}
 
 	commitStyle := resolved.Config.Commit.Style
-	validator, styleErr := style.For(commitStyle)
+	validator, styleErr := style.For(commitStyle, resolved.Config.Commit.Types)
 	if styleErr != nil {
 		return fail(styleErr.Error(), "set commit.style to conventional-commits, gitmoji, or freeform-with-rules")
 	}

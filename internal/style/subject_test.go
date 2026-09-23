@@ -18,7 +18,7 @@ func TestSubject(t *testing.T) {
 		{Freeform, "just some freeform text", "just some freeform text"},
 	}
 	for _, c := range cases {
-		v, err := For(c.style)
+		v, err := For(c.style, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -50,7 +50,7 @@ func runCommit(ctx context.Context, root *Options, opts *commitOptions, out io.W
 	}
 
 	commitStyle := resolved.Config.Commit.Style
-	validator, styleErr := style.For(commitStyle)
+	validator, styleErr := style.For(commitStyle, resolved.Config.Commit.Types)
 	if styleErr != nil {
 		return fail(styleErr.Error(), "set commit.style to conventional-commits, gitmoji, or freeform-with-rules")
 	}
