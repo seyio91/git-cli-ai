@@ -12,7 +12,7 @@ func TestValidateAcceptsConventionalMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt, func(t *testing.T) {
-			if result := Validate(tt); !result.Valid {
+			if result := Validate(tt, nil); !result.Valid {
 				t.Fatalf("expected valid message, got %q", result.Reason)
 			}
 		})
@@ -32,7 +32,7 @@ func TestSC01_ValidateAcceptsOpaqueBodyAfterBlankLine(t *testing.T) {
 
 	for name, message := range tests {
 		t.Run(name, func(t *testing.T) {
-			if result := Validate(message); !result.Valid {
+			if result := Validate(message, nil); !result.Valid {
 				t.Fatalf("expected valid message, got %q", result.Reason)
 			}
 		})
@@ -45,7 +45,7 @@ func TestSC01_ValidateRejectsBodyWithoutBlankLine(t *testing.T) {
 		"feat(api): drop v1\r\nbody",
 	} {
 		t.Run(message, func(t *testing.T) {
-			result := Validate(message)
+			result := Validate(message, nil)
 			if result.Valid {
 				t.Fatal("expected invalid message")
 			}
@@ -57,7 +57,7 @@ func TestSC01_ValidateRejectsBodyWithoutBlankLine(t *testing.T) {
 }
 
 func TestSC01_ValidateStillChecksHeaderWhenBodyPresent(t *testing.T) {
-	if result := Validate("not a header\n\nbody"); result.Valid {
+	if result := Validate("not a header\n\nbody", nil); result.Valid {
 		t.Fatal("expected invalid header to be rejected even with a well-formed body")
 	}
 }
@@ -77,7 +77,7 @@ func TestValidateRejectsNonConformingMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt, func(t *testing.T) {
-			if result := Validate(tt); result.Valid {
+			if result := Validate(tt, nil); result.Valid {
 				t.Fatal("expected invalid message")
 			}
 		})

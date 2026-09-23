@@ -17,9 +17,12 @@ var shortcodePattern = regexp.MustCompile(`^:[a-z0-9_+-]+:$`)
 // conventional rules rather than by a second, drifting copy of them.
 var conventionalPrefixPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(\([^()]*\))?!?: `)
 
-type gitmojiStyle struct{}
+// types constrains only an embedded conventional prefix. A bare :shortcode: is
+// left alone: a shortcode is not a commit type, and holding it to the same
+// list would need a second one.
+type gitmojiStyle struct{ types []string }
 
-func (gitmojiStyle) Validate(message string) Result {
+func (s gitmojiStyle) Validate(message string) Result {
 	header, result := splitHeader(message)
 	if !result.Valid {
 		return result
@@ -40,22 +43,27 @@ func (gitmojiStyle) Validate(message string) Result {
 	}
 
 	if conventionalPrefixPattern.MatchString(subject) {
-		if r := conventional.Validate(subject); !r.Valid {
-			return Result{Reason: r.Reason}
+		// The vocabulary reaches here because Type() below returns the
+		// embedded type, which branch.pattern renders as a {type}/ namespace
+		// exactly as the conventional style does. Leaving it unchecked would
+		// let the defect back in through the other style.
+		if r := conventional.Validate(subject, s.types); !r.Valid {
+			return Result{Reason: r.Reason, TypeNotAllowed: r.TypeNotAllowed}
 		}
 	}
 
 	return Result{Valid: true}
 }
 
-func (gitmojiStyle) Rules() string {
+func (s gitmojiStyle) Rules() string {
 	return `Style: gitmoji
 The header is a single line beginning with an emoji token, then one space, then
 a non-empty subject. The token is either a :shortcode: (lowercase letters,
 digits, '_', '+' or '-' between colons) or a literal emoji character.
 If the subject itself carries a "type(scope): " prefix, that prefix must satisfy
 the Conventional Commits rules.
-An optional body may follow, separated from the header by one blank line.` + sharedRules
+An optional body may follow, separated from the header by one blank line.` +
+		vocabularyRule(s.types) + sharedRules
 }
 
 // isEmojiToken accepts a :shortcode: or a run of non-ASCII runes. The latter is
