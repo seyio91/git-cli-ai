@@ -319,7 +319,7 @@ func resolveBody(
 	if err != nil {
 		return "", err
 	}
-	return result.Message, nil
+	return pr.StripPlaceholders(result.Message), nil
 }
 
 // offlineBody fills the template from the commit log. Placeholders with no
