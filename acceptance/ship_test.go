@@ -19,6 +19,7 @@ type shipResult struct {
 	URL           string `json:"url"`
 	CreatedBranch bool   `json:"created_branch"`
 	Existing      bool   `json:"existing"`
+	Updated       bool   `json:"updated"`
 	Draft         bool   `json:"draft"`
 	Pushed        bool   `json:"pushed"`
 	DryRun        bool   `json:"dry_run"`

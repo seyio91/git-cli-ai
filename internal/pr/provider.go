@@ -33,14 +33,33 @@ type Existing struct {
 	Base string
 }
 
+// Update describes a change to a pull request that is already open. A nil field
+// means "leave it as it is", which is why these are pointers: a body can
+// legitimately be set to something, and the absence of an instruction has to be
+// distinguishable from an instruction to write nothing.
+//
+// There is no Base field. Re-pointing an open pull request at a different base
+// is a far larger action than rewording it, and baseMismatch deliberately treats
+// a base change as an error rather than something to apply.
+type Update struct {
+	Head  string
+	Title *string
+	Body  *string
+}
+
 // Provider is the forge-facing surface. There is no merge method, and there
 // will not be one: refusing to merge is the property this tool is built around.
+// UpdatePR edits an open pull request's prose; that is the closest this
+// interface comes to acting on one, and it is still not a merge.
 type Provider interface {
 	// ExistingPR returns the open pull request for head, if one exists. A false
 	// second result means none was found, not an error.
 	ExistingPR(ctx context.Context, head string) (Existing, bool, error)
 	DefaultBranch(ctx context.Context) (string, error)
 	OpenPR(ctx context.Context, req Request) (string, error)
+	// UpdatePR changes the title and/or body of the open pull request on
+	// req.Head. A nil field is left untouched.
+	UpdatePR(ctx context.Context, req Update) error
 }
 
 // Error reports a forge failure. Hint is actionable guidance; the tool's own
@@ -151,6 +170,35 @@ func (g GH) OpenPR(ctx context.Context, req Request) (string, error) {
 	return url, nil
 }
 
+// UpdatePR edits an open pull request. The body travels on stdin via
+// `--body-file -` for the same reason OpenPR does: a long body must not have to
+// survive an argv limit. The pull request is addressed by its branch, which is
+// how ExistingPR already finds it, so no number has to be threaded through.
+//
+// A request with nothing set is a no-op rather than an error. The command layer
+// only calls this when an update was asked for, so an empty one means a caller
+// bug, not a user mistake — and issuing `gh pr edit` with no flags would edit
+// nothing while still costing a round trip and a chance to fail.
+func (g GH) UpdatePR(ctx context.Context, req Update) error {
+	if req.Title == nil && req.Body == nil {
+		return nil
+	}
+
+	args := []string{"pr", "edit", req.Head}
+	if req.Title != nil {
+		args = append(args, "--title", *req.Title)
+	}
+
+	var stdin string
+	if req.Body != nil {
+		args = append(args, "--body-file", "-")
+		stdin = *req.Body
+	}
+
+	_, err := g.run(ctx, stdin, args...)
+	return err
+}
+
 func (g GH) run(ctx context.Context, stdin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
@@ -181,7 +229,7 @@ func (g GH) run(ctx context.Context, stdin string, args ...string) (string, erro
 		}
 		return "", &Error{
 			Message: fmt.Sprintf("gh %s failed", label(args)),
-			Hint:    ghHint(err, stderr.String()),
+			Hint:    ghHint(err, stderr.String(), label(args)),
 			Details: strings.TrimSpace(stderr.String()),
 		}
 	}
@@ -198,7 +246,11 @@ func label(args []string) string {
 	return strings.Join(args, " ")
 }
 
-func ghHint(err error, stderr string) string {
+// ghHint turns a gh failure into something actionable. operation is the
+// subcommand that failed, from label: the permission branch used to say
+// "cannot open a pull request" whatever had run, which sent anyone hitting a
+// 403 on an edit looking for the wrong permission.
+func ghHint(err error, stderr string, operation string) string {
 	lowered := strings.ToLower(stderr)
 
 	switch {
@@ -209,7 +261,7 @@ func ghHint(err error, stderr string) string {
 	case strings.Contains(lowered, "could not determine"), strings.Contains(lowered, "no git remotes"):
 		return "run this inside a repository with a GitHub remote, or add one with `git remote add origin <url>`"
 	case strings.Contains(lowered, "permission"), strings.Contains(lowered, "403"):
-		return "the authenticated account cannot open a pull request on this repository; check its permissions"
+		return "the authenticated account cannot run `gh " + operation + "` on this repository; check its permissions"
 	}
 
 	return "run the same gh command manually to see its full output"
