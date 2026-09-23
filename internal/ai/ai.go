@@ -66,6 +66,9 @@ func (e *ProviderError) Error() string {
 }
 
 const instructionsPreamble = `Write the commit message for the staged change described below.
+Write plainly and do not inflate what the change is: no emoji, no bolded labels,
+and none of comprehensive, robust, crucial, key, seamless, leverage, enhance,
+underscore, significantly, streamline.
 Reply with the message itself and nothing else: no preamble, no commentary, no
 code fences.`
 
@@ -76,6 +79,14 @@ nothing is known about it rather than inventing something.
 Be brief. A reviewer needs what changed and why, not a design document: aim for
 a few sentences or a short list per section. Do not restate what the diff
 already shows, and do not add headings the template did not ask for.
+Write the way the repository's own history reads. State each point once and do
+not add a closing line that restates it. Say things directly instead of framing
+them as "not just X but Y". Give a bullet its content, not a bolded label and a
+colon. No emoji, no decorative headings, no horizontal rules. Avoid the words
+models reach for and engineers do not: comprehensive, robust, crucial, key,
+seamless, leverage, enhance, underscore, significantly, streamline. Do not
+inflate what the change is — a fix is a fix, not a critical improvement that
+strengthens the codebase.
 Reply with the body itself and nothing else: no preamble, no commentary, no
 code fences.`
 
