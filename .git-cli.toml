@@ -1,0 +1,15 @@
+# git-cli's own configuration. Everything not stated here is the built-in
+# default, which for this repo is nearly everything — the point of this file is
+# to dogfood commit.types on the tool that implements it.
+
+[commit]
+# Closed type vocabulary. Unset, the validator checks that a type is well
+# formed and never what it is called, which is how `ai: discourage inflated
+# language in generated messages` once passed — and since branch.pattern is
+# {type}/{slug}, an invented type is also an invented branch namespace.
+#
+# feat, fix, test and docs are the types this repository's history actually
+# uses. refactor and chore are added ahead of need: both are standard, both
+# are near-certain on a Go CLI, and the alternative is a failed commit at the
+# moment you want one. Adding a type here also adds a branch namespace.
+types = ["feat", "fix", "docs", "test", "refactor", "chore"]
