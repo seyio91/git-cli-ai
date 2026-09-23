@@ -23,6 +23,7 @@ type prOptions struct {
 	intent   string
 	base     string
 	draft    bool
+	update   bool
 }
 
 type prPayload struct {
@@ -31,6 +32,11 @@ type prPayload struct {
 	Base     string `json:"base"`
 	Title    string `json:"title"`
 	Existing bool   `json:"existing,omitempty"`
+	// Updated reports that this run rewrote the open pull request's prose. It
+	// sits alongside Existing rather than replacing it: the pull request was
+	// still found rather than created, and a caller that only wants to know
+	// whether it had to create one should not have to learn a second field.
+	Updated bool `json:"updated,omitempty"`
 	// Draft reports the state this run asked the forge for. It is only ever set
 	// on a run that created the pull request: converging on an existing one
 	// reports existing instead, because nothing was created to be a draft.
@@ -57,6 +63,7 @@ func NewPRCommand(root *Options, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.intent, "intent", "", "describe the change and let the provider render it into the template")
 	cmd.Flags().StringVar(&opts.base, "base", "", "base branch (defaults to the repository's default branch)")
 	cmd.Flags().BoolVar(&opts.draft, "draft", false, "open the pull request as a draft")
+	cmd.Flags().BoolVar(&opts.update, "update", false, "rewrite the body of an already-open pull request")
 
 	return cmd
 }
@@ -127,12 +134,19 @@ func runPR(ctx context.Context, root *Options, opts *prOptions, out io.Writer) e
 		if err := baseMismatch(opts.base, existing.Base); err != nil {
 			return err
 		}
+		updated, err := updateExisting(ctx, root, opts, resolved, repo, provider, template, branch, base, body)
+		if err != nil {
+			return err
+		}
 		return writePRPayload(out, root.JSON, prPayload{
 			URL:      existing.URL,
 			Branch:   branch,
 			Base:     base,
+			Title:    opts.title,
 			Existing: true,
+			Updated:  updated,
 			Pushed:   needsPush,
+			DryRun:   root.DryRun && updated,
 		})
 	}
 
@@ -238,6 +252,87 @@ func baseMismatch(requested, existing string) error {
 	return fail(
 		fmt.Sprintf("an open pull request for this branch targets %s, but --base is %s", existing, requested),
 		fmt.Sprintf("re-run without --base to use the existing pull request, or close it to open one against %s", requested),
+	)
+}
+
+// updateExisting handles a branch that already has an open pull request, and
+// reports whether this run rewrote it. Three outcomes: a bare re-run converges
+// exactly as it always has; prose without --update is refused; --update writes
+// the body, and the title too when --title named one.
+//
+// --update is only consulted here, so asking for one on a branch with no open
+// pull request opens it instead of failing. Converging on the asked-for end
+// state is what the rest of this command does, and an agent that cannot know
+// whether the pull request exists yet should not have to.
+func updateExisting(
+	ctx context.Context,
+	root *Options,
+	opts *prOptions,
+	resolved appconfig.Resolved,
+	repo gitrepo.Repository,
+	provider pr.Provider,
+	template pr.Template,
+	branch string,
+	base string,
+	supplied string,
+) (bool, error) {
+	if !opts.update {
+		return false, proseWithoutUpdate(opts)
+	}
+
+	// A preview reports intent only. Generating the body would cost a provider
+	// call, which --dry-run promises not to make, and fetching the current one
+	// to diff against it is a larger feature than this needs to be.
+	if root.DryRun {
+		return true, nil
+	}
+
+	// The title is computed even when it is not being changed: resolveBody
+	// takes it as generation context and as the offline summary fallback, so a
+	// body written without it is written about nothing. Only an explicit
+	// --title is sent on to the forge.
+	title, err := prTitle(ctx, opts, repo, branch)
+	if err != nil {
+		return false, err
+	}
+
+	body, err := resolveBody(ctx, resolved, repo, template, supplied, opts.intent, title, base)
+	if err != nil {
+		return false, err
+	}
+
+	update := pr.Update{Head: branch, Body: &body}
+	if opts.title != "" {
+		update.Title = &opts.title
+	}
+	if err := provider.UpdatePR(ctx, update); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// proseWithoutUpdate refuses prose aimed at a pull request that is already
+// open. This used to exit 0 having sent nothing, which told an agent its body
+// had landed — the missing capability read as a silent success rather than as
+// a gap, and that is worse than either.
+func proseWithoutUpdate(opts *prOptions) error {
+	supplied := ""
+	switch {
+	case opts.bodyFile != "":
+		supplied = "--body-file"
+	case opts.body != "":
+		supplied = "--body"
+	case opts.intent != "":
+		supplied = "--intent"
+	case opts.title != "":
+		supplied = "--title"
+	default:
+		return nil
+	}
+
+	return fail(
+		fmt.Sprintf("a pull request is already open for this branch, so %s would be ignored", supplied),
+		fmt.Sprintf("add --update to rewrite it, or drop %s to converge on the open pull request", supplied),
 	)
 }
 
@@ -410,10 +505,16 @@ func writePRPayload(out io.Writer, asJSON bool, payload prPayload) error {
 	}
 
 	switch {
+	case payload.DryRun && payload.Updated:
+		_, _ = fmt.Fprintf(out, "dry-run: would update the pull request for %s\n", payload.Branch)
+		_, _ = fmt.Fprintln(out, payload.URL)
+		return nil
 	case payload.DryRun:
 		_, _ = fmt.Fprintf(out, "dry-run: would open %s%s -> %s\n", draftLabel(payload.Draft), payload.Branch, payload.Base)
 		_, _ = fmt.Fprintf(out, "title: %s\n", payload.Title)
 		return nil
+	case payload.Updated:
+		_, _ = fmt.Fprintln(out, "pull request updated")
 	case payload.Existing:
 		_, _ = fmt.Fprintln(out, "pull request already open")
 	case payload.Draft:
