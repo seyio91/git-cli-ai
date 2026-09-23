@@ -9,6 +9,10 @@
 
 [commit]
 style = "conventional-commits"
+# Close the type vocabulary. Omit this key and any well-formed type is
+# accepted, which is the default everywhere. Note that branch.pattern renders
+# {type}, so this also closes the set of branch namespaces ship can create.
+types = ["feat", "fix", "chore", "docs", "refactor", "test"]
 
 [branch]
 # This repo names ship's branches without the type prefix.

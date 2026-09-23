@@ -131,12 +131,21 @@ Decoding is strict — an unknown key is an error naming both the key and the fi
 
 Ready-to-copy examples are in [`examples/`](examples/): [`config.global.toml`](examples/config.global.toml) and [`config.repo.toml`](examples/config.repo.toml).
 
+`commit.types` is worth one note. Unset, the validator checks that a type is
+*well formed* and never what it is called, so a generated message can invent
+one. Set it and the list is enforced and stated in the prompt. A supplied
+`-m` carrying an unlisted type is then an error rather than something to
+rewrite — it already declares a type, and rendering it would commit a
+different one. Because `branch.pattern` is `{type}/{slug}`, setting the list
+also closes the set of branch namespaces `ship` can create.
+
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `commit.style` | `conventional-commits` | `conventional-commits`, `gitmoji`, or `freeform-with-rules`. |
+| `commit.types` | *(any)* | Closed set of allowed conventional types, e.g. `["feat", "fix", "chore"]`. Unset accepts any well-formed type. |
 | `branch.pattern` | `{type}/{slug}` | Name `ship` gives a branch it creates. Must contain `{type}` and/or `{slug}`. |
 | `branch.default_branch` | *(detect)* | Override the default branch. Empty detects it via `origin/HEAD`, then `gh`. |
-| `pr.template` | *(built-in)* | Path to a PR body template. Empty uses the built-in (Summary / Changes / Testing). `{{task}}` and `{{plan}}` are still substitutable in a custom template. |
+| `pr.template` | *(built-in)* | Path to a PR body template. Empty uses the built-in (Description / Changes / Prerequisites / Ordering). `{{task}}` and `{{plan}}` are still substitutable in a custom template. |
 | `ai.provider` | `openai` | Active provider profile by name. |
 | `ai.model` | — | Model for both tasks, unless a per-task model is set. |
 | `ai.commit_model` | `gpt-4.1-mini` | Model for commit messages. |
