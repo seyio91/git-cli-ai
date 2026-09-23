@@ -13,16 +13,38 @@ import (
 // the pull request rather than the person who wrote it. A reviewer is deciding
 // whether the diff is correct; the author's task framing and step-by-step plan
 // are process artifacts that belong wherever they already live, so neither has a
-// section here. {{task}} and {{plan}} remain substitutable for a template that
-// asks for them by name — they are absent from the default, not unsupported.
-const DefaultTemplate = `## Summary
+// section here. {{task}}, {{plan}} and {{testing}} remain substitutable for a
+// template that asks for them by name — they are absent from the default, not
+// unsupported.
+//
+// Testing left the default because CI reports it. A hand-written claim that the
+// tests pass duplicates a status check when it is right and contradicts one when
+// it is wrong, which is the same objection that removed Task and Plan. The
+// offline path could not fill it anyway: {{testing}} has no local source, so the
+// section was already dropped on every provider-less render.
+//
+// Prerequisites and Ordering are safe to ship by default even though most pull
+// requests have neither, because a section with nothing in it never reaches the
+// body: an unfilled placeholder is dropped at render, and a provider that
+// answers "None." is dropped by StripPlaceholders. They cost nothing when
+// irrelevant and they carry the two things no tool can derive — a cross-repo
+// dependency, and which pull request has to merge first.
+//
+// {{summary}} keeps its name under a heading called Description. The placeholder
+// names are the interface the command layer fills; the headings are what a
+// reviewer reads. Renaming the placeholder to match the heading would break
+// every custom pr.template in existence for no gain.
+const DefaultTemplate = `## Description
 {{summary}}
 
 ## Changes
 {{changes}}
 
-## Testing
-{{testing}}
+## Prerequisites
+{{prerequisites}}
+
+## Ordering
+{{ordering}}
 `
 
 // Template is the active PR body structure, either the built-in one or a file
@@ -80,12 +102,20 @@ func StripPlaceholders(body string) string {
 	return render(body, nil, true)
 }
 
-// denial matches a whole line that reports an absence. The bounded word count
-// and the lack of a list marker in the pattern are what keep it from eating real
-// content: a genuine change line can open with "no" ("- no longer reads the env
-// var"), but it carries a marker, and an unmarked three-word line under its own
-// heading is not telling a reviewer anything.
-var denial = regexp.MustCompile(`(?i)^(none|n/?a|nothing|not applicable|no\s+\S+(\s+\S+){0,2})\.?$`)
+// denial matches a line that opens by reporting an absence. It matches a leading
+// clause rather than the whole line because the first version was anchored at
+// both ends and real output walked straight past it: a live body carried
+// "None. Self-contained, no secrets or tags involved." and "None, can merge on
+// its own.", neither of which is only a denial, and both sections survived to the
+// reviewer.
+//
+// Two things keep it from eating real content. The denial must close within
+// three words, on punctuation or end of line — so "No caller outside
+// internal/cli reaches this path any more, so the export is gone." does not
+// match, its first comma being eight words in. And the pattern is anchored with
+// no list marker, so a genuine change line that opens with "no"
+// ("- no longer reads the env var") is exempt.
+var denial = regexp.MustCompile(`(?i)^(none|n/?a|nothing|not applicable|no)(\s+\S+){0,3}\s*([.,;:]|$)`)
 
 // hollow reports whether a section's body, excluding its heading, says only that
 // there is nothing to report. Only a lone line qualifies — a section with two or

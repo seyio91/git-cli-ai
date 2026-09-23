@@ -78,9 +78,17 @@ template that follows. Reproduce its headings verbatim, including the leading
 content. When a section does not apply, omit its heading together with its
 content: do not keep the heading and write "None", "N/A", or a sentence saying
 there is nothing to report.
-Be brief. A reviewer needs what changed and why, not a design document: aim for
-a few sentences or a short list per section. Do not restate what the diff
-already shows, and do not add headings the template did not ask for.
+Be brief and concrete. A reviewer needs what changed and why, not a design
+document. Keep the whole body under roughly 200 words: a few sentences or a
+short list per section, and a bullet that runs to one or two lines. Do not
+restate what the diff already shows, and do not add headings the template did
+not ask for.
+Prefer fact over interpretation. Name what changed and where. Leave out
+reasoning the diff already carries, implications the reader can draw for
+themselves, caveats nobody asked for, and any paragraph that opens by telling
+the reader what they should know or what to watch out for. Where a fact needs a
+reason, give it one clause rather than a paragraph. Never append explanatory
+prose after a section's list.
 Write the way the repository's own history reads. State each point once and do
 not add a closing line that restates it. Say things directly instead of framing
 them as "not just X but Y". Give a bullet its content, not a bolded label and a
