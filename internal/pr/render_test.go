@@ -88,3 +88,44 @@ func TestRenderIgnoresFencedHeadings(t *testing.T) {
 		t.Errorf("dropped fenced content:\n%s", body)
 	}
 }
+
+// A generated body reached a reviewer with "## Prerequisites\n\nNone." and
+// "## Ordering\n\nNone." under a template whose preamble told the provider to
+// omit an inapplicable section outright. The instruction did not hold, so the
+// drop happens here instead.
+func TestStripPlaceholdersDropsSectionsThatReportNothing(t *testing.T) {
+	body := StripPlaceholders(
+		"## Description\n\nPrints a greeting.\n\n" +
+			"## Changes\n\n- main() prints \"hi\"\n\n" +
+			"## Prerequisites\n\nNone.\n\n" +
+			"## Ordering\n\nNone.\n")
+
+	for _, gone := range []string{"## Prerequisites", "## Ordering", "None."} {
+		if strings.Contains(body, gone) {
+			t.Errorf("body still contains %q:\n%s", gone, body)
+		}
+	}
+	for _, kept := range []string{"## Description", "Prints a greeting.", "## Changes", "- main() prints"} {
+		if !strings.Contains(body, kept) {
+			t.Errorf("body lost %q:\n%s", kept, body)
+		}
+	}
+}
+
+// The denial pattern has to leave real content alone. A change line may open
+// with "no", and a section carrying more than one line is saying something even
+// if its first line is short.
+func TestStripPlaceholdersKeepsContentThatMerelyLooksLikeADenial(t *testing.T) {
+	cases := map[string]string{
+		"list item opening with no":  "## Changes\n\n- no longer reads ANTHROPIC_BASE_URL\n",
+		"denial beside real content": "## Ordering\n\nNone.\n- but tpe-kubernetes#8460 must follow\n",
+		"prose that starts with no":  "## Description\n\nNo caller outside internal/cli reaches this path any more, so the export is gone.\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := StripPlaceholders(body); strings.TrimSpace(got) != strings.TrimSpace(body) {
+				t.Errorf("StripPlaceholders altered content it should have kept:\nin:  %q\nout: %q", body, got)
+			}
+		})
+	}
+}
