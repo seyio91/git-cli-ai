@@ -374,12 +374,15 @@ func TestSC17gUnpinnedPRBodyDropsEmptySections(t *testing.T) {
 	}
 
 	body := postedBody(t, bodyPath)
-	for _, hollow := range []string{"## Task", "## Plan", "{{"} {
+	// Task and Plan are absent from the default template; Prerequisites and
+	// Ordering are in it but have no local source, so the offline path must drop
+	// them the same way rather than posting the headings bare.
+	for _, hollow := range []string{"## Task", "## Plan", "## Prerequisites", "## Ordering", "{{"} {
 		if strings.Contains(body, hollow) {
 			t.Errorf("posted %q with no value behind it:\n%s", hollow, body)
 		}
 	}
-	if !strings.Contains(body, "## Summary") {
+	if !strings.Contains(body, "## Description") {
 		t.Errorf("dropped the sections that did have content:\n%s", body)
 	}
 }

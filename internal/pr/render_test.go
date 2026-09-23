@@ -13,14 +13,15 @@ func TestRenderDropsEmptySections(t *testing.T) {
 		"changes": "- a.txt",
 	})
 
-	// Task and Plan are not in the default template at all; asserting their
-	// absence here is what keeps them from drifting back in.
-	for _, gone := range []string{"## Task", "## Plan", "## Testing", "{{"} {
+	// Task, Plan and Testing are not in the default template at all; asserting
+	// their absence here is what keeps them from drifting back in. Prerequisites
+	// and Ordering are in it, but unfilled, so they must drop too.
+	for _, gone := range []string{"## Task", "## Plan", "## Testing", "## Prerequisites", "## Ordering", "{{"} {
 		if strings.Contains(body, gone) {
 			t.Errorf("rendered body still contains %q:\n%s", gone, body)
 		}
 	}
-	for _, kept := range []string{"## Summary", "Does the thing.", "## Changes", "- a.txt"} {
+	for _, kept := range []string{"## Description", "Does the thing.", "## Changes", "- a.txt"} {
 		if !strings.Contains(body, kept) {
 			t.Errorf("rendered body lost %q:\n%s", kept, body)
 		}
@@ -30,11 +31,27 @@ func TestRenderDropsEmptySections(t *testing.T) {
 func TestRenderKeepsSectionsThatHaveValues(t *testing.T) {
 	tmpl := Template{Text: DefaultTemplate}
 
-	body := tmpl.Render(map[string]string{"summary": "s", "changes": "c", "testing": "go test"})
+	body := tmpl.Render(map[string]string{"summary": "s", "changes": "c"})
 
-	for _, kept := range []string{"## Summary", "s", "## Changes", "c", "## Testing", "go test"} {
+	for _, kept := range []string{"## Description", "s", "## Changes", "c"} {
 		if !strings.Contains(body, kept) {
 			t.Errorf("rendered body lost %q:\n%s", kept, body)
+		}
+	}
+}
+
+// Testing is gone from the default because CI reports it. {{testing}} is still
+// substitutable, so a repository that wants the section can ask for it by name.
+func TestDefaultTemplateHasNoTestingSection(t *testing.T) {
+	if strings.Contains(DefaultTemplate, "Testing") {
+		t.Errorf("default template still carries a Testing section:\n%s", DefaultTemplate)
+	}
+
+	custom := Template{Text: "## Summary\n{{summary}}\n\n## Testing\n{{testing}}\n"}
+	body := custom.Render(map[string]string{"summary": "s", "testing": "go test ./..."})
+	for _, kept := range []string{"## Testing", "go test ./..."} {
+		if !strings.Contains(body, kept) {
+			t.Errorf("a custom template asking for testing by name lost %q:\n%s", kept, body)
 		}
 	}
 }
@@ -120,6 +137,47 @@ func TestStripPlaceholdersKeepsContentThatMerelyLooksLikeADenial(t *testing.T) {
 		"list item opening with no":  "## Changes\n\n- no longer reads ANTHROPIC_BASE_URL\n",
 		"denial beside real content": "## Ordering\n\nNone.\n- but tpe-kubernetes#8460 must follow\n",
 		"prose that starts with no":  "## Description\n\nNo caller outside internal/cli reaches this path any more, so the export is gone.\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := StripPlaceholders(body); strings.TrimSpace(got) != strings.TrimSpace(body) {
+				t.Errorf("StripPlaceholders altered content it should have kept:\nin:  %q\nout: %q", body, got)
+			}
+		})
+	}
+}
+
+// The first denial pattern was anchored at both ends, so it only caught a line
+// that was nothing but a denial. These two strings are verbatim from a real
+// generated body (CCV-Group/platform-helm-charts#115) that reached a reviewer
+// with both sections intact.
+func TestStripPlaceholdersDropsDenialsThatCarryTrailingWords(t *testing.T) {
+	cases := map[string]string{
+		"denial then a second sentence": "## Prerequisites\n\nNone. Self-contained, no secrets or tags involved.\n",
+		"denial then a clause":          "## Ordering\n\nNone, can merge on its own.\n",
+		"bare denial":                   "## Ordering\n\nNone.\n",
+		"no plus two words":             "## Ordering\n\nNo ordering constraints.\n",
+		"nothing plus words":            "## Prerequisites\n\nNothing to report.\n",
+		"n/a":                           "## Prerequisites\n\nN/A\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := strings.TrimSpace(StripPlaceholders(body)); got != "" {
+				t.Errorf("section survived as %q", got)
+			}
+		})
+	}
+}
+
+// Widening the pattern must not start eating real content. The discriminator is
+// that a denial closes within three words on punctuation or end of line.
+func TestStripPlaceholdersKeepsProseThatOnlyOpensLikeADenial(t *testing.T) {
+	cases := map[string]string{
+		"comma arrives late":    "## Description\n\nNo caller outside internal/cli reaches this path any more, so the export is gone.\n",
+		"list item opens on no": "## Changes\n\n- no longer reads ANTHROPIC_BASE_URL\n",
+		"none inside a word":    "## Description\n\nNonetheless the export stays for now.\n",
+		"na inside a word":      "## Changes\n\nNamespace handling moved into the caller.\n",
+		"denial beside content": "## Ordering\n\nNone.\n- but tpe-kubernetes#8460 must follow\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
