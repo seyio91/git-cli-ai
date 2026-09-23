@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	appconfig "github.com/seyio91/git-cli-ai/internal/config"
 	"github.com/spf13/cobra"
@@ -39,6 +40,11 @@ func writeConfigPayload(out io.Writer, asJSON bool, resolved appconfig.Resolved)
 	}
 
 	printValue("commit.style", resolved.Config.Commit.Style)
+	// A list is printed unquoted, and an unset one prints as [] rather than
+	// being omitted: "any type is accepted" is a real state of this setting,
+	// and leaving the line out would read as the setting not existing.
+	_, _ = fmt.Fprintf(out, "commit.types = [%s] (%s)\n",
+		strings.Join(resolved.Config.Commit.Types, ", "), resolved.Sources["commit.types"])
 	printValue("ai.provider", resolved.Config.AI.Provider)
 	printValue("ai.model", resolved.Config.AI.Model)
 	printValue("ai.commit_model", resolved.Config.AI.CommitModel)

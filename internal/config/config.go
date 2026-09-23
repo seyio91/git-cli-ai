@@ -13,6 +13,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/seyio91/git-cli-ai/internal/branch"
+	"github.com/seyio91/git-cli-ai/internal/conventional"
 )
 
 const (
@@ -30,6 +31,11 @@ type Config struct {
 
 type CommitConfig struct {
 	Style string `json:"style"`
+	// Types is the closed set of conventional commit types. Empty means the
+	// open vocabulary, which is what every repo that sets nothing keeps: the
+	// validator has always checked the shape of a type and never its name, and
+	// closing that by default would change what an existing repo accepts.
+	Types []string `json:"types,omitempty"`
 }
 
 type AIConfig struct {
@@ -88,8 +94,12 @@ type fileConfig struct {
 	Branch *fileBranchConfig `toml:"branch"`
 }
 
+// Types is a pointer so that `types = []` is distinguishable from an absent
+// key. They mean opposite things and the difference has to survive decoding:
+// absent is the open vocabulary, and an empty list allows nothing at all.
 type fileCommitConfig struct {
-	Style *string `toml:"style"`
+	Style *string   `toml:"style"`
+	Types *[]string `toml:"types"`
 }
 
 type fileAIConfig struct {
@@ -186,6 +196,7 @@ func Defaults() Config {
 func defaultResolved() Resolved {
 	sources := map[string]string{
 		"commit.style":          LayerDefault,
+		"commit.types":          LayerDefault,
 		"ai.provider":           LayerDefault,
 		"ai.model":              LayerDefault,
 		"ai.commit_model":       LayerDefault,
@@ -284,15 +295,30 @@ func strictKeys(err *toml.StrictMissingError) string {
 }
 
 func apply(resolved *Resolved, cfg *fileConfig, layer string, path string) error {
-	if cfg.Commit != nil && cfg.Commit.Style != nil {
-		if !validCommitStyle(*cfg.Commit.Style) {
-			return &LoadError{
-				Message: fmt.Sprintf("invalid commit.style in %s: %q", path, *cfg.Commit.Style),
-				Hint:    "set commit.style to conventional-commits, gitmoji, or freeform-with-rules",
+	if cfg.Commit != nil {
+		if cfg.Commit.Style != nil {
+			if !validCommitStyle(*cfg.Commit.Style) {
+				return &LoadError{
+					Message: fmt.Sprintf("invalid commit.style in %s: %q", path, *cfg.Commit.Style),
+					Hint:    "set commit.style to conventional-commits, gitmoji, or freeform-with-rules",
+				}
 			}
+			resolved.Config.Commit.Style = *cfg.Commit.Style
+			resolved.Sources["commit.style"] = layer
 		}
-		resolved.Config.Commit.Style = *cfg.Commit.Style
-		resolved.Sources["commit.style"] = layer
+		if cfg.Commit.Types != nil {
+			// Checked here for the same reason branch.pattern is: the error
+			// names the file that set it, and arrives before a billable
+			// generation rather than after one.
+			if err := validCommitTypes(*cfg.Commit.Types); err != nil {
+				return &LoadError{
+					Message: fmt.Sprintf("invalid commit.types in %s: %s", path, err),
+					Hint:    "list the types you allow, for example [\"feat\", \"fix\", \"chore\"]; remove the key entirely to accept any type",
+				}
+			}
+			resolved.Config.Commit.Types = *cfg.Commit.Types
+			resolved.Sources["commit.types"] = layer
+		}
 	}
 
 	if cfg.AI != nil {
@@ -406,6 +432,30 @@ func validProviderType(providerType string) bool {
 	default:
 		return false
 	}
+}
+
+// validCommitTypes rejects a vocabulary that cannot do what it was written to
+// do. An empty list is refused rather than read as "any type": a list that
+// allows nothing is never what anyone meant, and silently treating it as the
+// open vocabulary would be the widest possible reading of the narrowest
+// possible instruction.
+func validCommitTypes(types []string) error {
+	if len(types) == 0 {
+		return errors.New("the list is empty, which would allow no type at all")
+	}
+
+	seen := make(map[string]bool, len(types))
+	for _, t := range types {
+		if !conventional.ValidType(t) {
+			return fmt.Errorf("%q is not a valid type: a type starts with a lowercase letter and contains only lowercase letters, digits, or hyphens", t)
+		}
+		if seen[t] {
+			return fmt.Errorf("%q is listed more than once", t)
+		}
+		seen[t] = true
+	}
+
+	return nil
 }
 
 func validCommitStyle(style string) bool {

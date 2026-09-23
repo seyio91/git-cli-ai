@@ -14,6 +14,14 @@ type Result struct {
 	Reason string
 }
 
+// ValidType reports whether s is well formed as a conventional commit type. It
+// is exported so config can reject a bad entry in commit.types at load, naming
+// the file that set it, rather than letting it sit in a vocabulary that can
+// never match anything.
+func ValidType(s string) bool {
+	return typePattern.MatchString(s)
+}
+
 // Validate checks a commit message against Conventional Commits. The header is
 // validated strictly; an optional body after a mandatory blank line is opaque
 // and never rejected on content.
