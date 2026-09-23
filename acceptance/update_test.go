@@ -200,6 +200,69 @@ func TestUpdate_TitleIsSentOnlyWhenNamed(t *testing.T) {
 	})
 }
 
+// U7 — ship reaches an already-open pull request by two different routes, and
+// --update has to work from both. The first is a branch with no work of its
+// own, which short-circuits before the push; the second is the ordinary resume,
+// which pushes and then finds the pull request.
+func TestUpdate_ShipUpdatesFromBothShortCircuits(t *testing.T) {
+	t.Run("no work on the branch", func(t *testing.T) {
+		repo := newRepo(t)
+		remote := withRemote(t, repo)
+		pinDefaultBranch(t, repo)
+		mustGit(t, repo, "checkout", "-q", "-b", "feat/thing")
+		log, editBody := withExistingPR(t, repo)
+
+		writeFile(t, repo, "body.md", "## Description\nreworded, no code change\n")
+
+		res := run(t, repo, "ship", "--update", "--body-file", "body.md", "--json")
+		if res.exitCode != 0 {
+			t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+		}
+
+		p := decodeShip(t, res)
+		if !p.Updated || p.URL != prURL {
+			t.Errorf("payload = %+v, want updated with the existing URL", p)
+		}
+		if _, edited := editArgv(t, log); !edited {
+			t.Fatal("gh pr edit was never called")
+		}
+		if body := editedBody(t, editBody); body != "## Description\nreworded, no code change\n" {
+			t.Errorf("edited body = %q, want it verbatim", body)
+		}
+
+		// Proof this took the pre-push route rather than the resume one: the
+		// other short-circuit pushes an unpushed branch before it looks.
+		if out := mustGit(t, remote, "branch", "--format=%(refname:short)"); strings.Contains(out, "feat/thing") {
+			t.Errorf("remote branches = %q, want the branch unpushed — this exercised the wrong short-circuit", out)
+		}
+	})
+
+	t.Run("resume after the push", func(t *testing.T) {
+		repo := newRepo(t)
+		withRemote(t, repo)
+		onFeatureBranch(t, repo)
+		log, editBody := withExistingPR(t, repo)
+
+		writeFile(t, repo, "body.md", "## Description\nreworded on resume\n")
+
+		res := run(t, repo, "ship", "--update", "--body-file", "body.md", "--json")
+		if res.exitCode != 0 {
+			t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+		}
+
+		p := decodeShip(t, res)
+		if !p.Updated || p.URL != prURL || !p.Pushed {
+			t.Errorf("payload = %+v, want an updated pull request on a pushed branch", p)
+		}
+		if _, edited := editArgv(t, log); !edited {
+			t.Fatal("gh pr edit was never called")
+		}
+		if body := editedBody(t, editBody); body != "## Description\nreworded on resume\n" {
+			t.Errorf("edited body = %q, want it verbatim", body)
+		}
+	})
+}
+
 // U6 — a preview writes nothing and generates nothing, and still names the
 // pull request it would rewrite.
 func TestUpdate_DryRunEditsNothingAndCallsNoProvider(t *testing.T) {

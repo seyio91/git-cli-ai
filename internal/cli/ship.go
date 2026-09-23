@@ -24,6 +24,7 @@ type shipOptions struct {
 	intent   string
 	base     string
 	draft    bool
+	update   bool
 }
 
 type shipPayload struct {
@@ -34,6 +35,7 @@ type shipPayload struct {
 	URL           string `json:"url,omitempty"`
 	CreatedBranch bool   `json:"created_branch,omitempty"`
 	Existing      bool   `json:"existing,omitempty"`
+	Updated       bool   `json:"updated,omitempty"`
 	Draft         bool   `json:"draft,omitempty"`
 	Pushed        bool   `json:"pushed,omitempty"`
 	DryRun        bool   `json:"dry_run,omitempty"`
@@ -57,6 +59,7 @@ func NewShipCommand(root *Options, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.intent, "intent", "", "describe the change and let the provider render it into the template")
 	cmd.Flags().StringVar(&opts.base, "base", "", "base branch (defaults to the repository's default branch)")
 	cmd.Flags().BoolVar(&opts.draft, "draft", false, "open the pull request as a draft")
+	cmd.Flags().BoolVar(&opts.update, "update", false, "rewrite the body of an already-open pull request")
 
 	return cmd
 }
@@ -75,7 +78,7 @@ func runShip(ctx context.Context, root *Options, opts *shipOptions, out io.Write
 
 	// The pr-side flags are validated before anything mutates: a mistyped body
 	// flag or an unreadable template must fail before a branch or commit exists.
-	prOpts := &prOptions{title: opts.title, body: opts.body, bodyFile: opts.bodyFile, intent: opts.intent, base: opts.base, draft: opts.draft}
+	prOpts := &prOptions{title: opts.title, body: opts.body, bodyFile: opts.bodyFile, intent: opts.intent, base: opts.base, draft: opts.draft, update: opts.update}
 	body, err := suppliedBody(prOpts)
 	if err != nil {
 		return err
@@ -210,7 +213,18 @@ func runShip(ctx context.Context, root *Options, opts *shipOptions, out io.Write
 				if err := baseMismatch(opts.base, existing.Base); err != nil {
 					return err
 				}
-				return writeShipPayload(out, root.JSON, shipPayload{URL: existing.URL, Branch: branch, Base: base, Existing: true})
+				updated, err := updateExisting(ctx, root, prOpts, resolved, repo, provider, template, branch, base, body)
+				if err != nil {
+					return progress.wrap(err)
+				}
+				return writeShipPayload(out, root.JSON, shipPayload{
+					URL:      existing.URL,
+					Branch:   branch,
+					Base:     base,
+					Title:    opts.title,
+					Existing: true,
+					Updated:  updated,
+				})
 			}
 			return emptyStageError(status)
 		}
@@ -255,12 +269,18 @@ func openPR(
 		if err := baseMismatch(prOpts.base, existing.Base); err != nil {
 			return err
 		}
+		updated, err := updateExisting(ctx, root, prOpts, resolved, repo, provider, template, branch, base, body)
+		if err != nil {
+			return progress.wrap(err)
+		}
 		return writeShipPayload(out, root.JSON, shipPayload{
-			URL:           existing.URL,
 			Branch:        branch,
 			Base:          base,
+			Title:         prOpts.title,
+			URL:           existing.URL,
 			CreatedBranch: createdBranch,
 			Existing:      true,
+			Updated:       updated,
 			Pushed:        needsPush,
 		})
 	}
@@ -334,6 +354,9 @@ func resumeCommand(opts *shipOptions) string {
 	}
 	if opts.draft {
 		cmd += " --draft"
+	}
+	if opts.update {
+		cmd += " --update"
 	}
 	if opts.title != "" {
 		cmd += fmt.Sprintf(" --title %q", opts.title)
@@ -447,6 +470,8 @@ func writeShipPayload(out io.Writer, asJSON bool, payload shipPayload) error {
 		_, _ = fmt.Fprintf(out, "message: %s\n", payload.Message)
 		_, _ = fmt.Fprintf(out, "title: %s\n", payload.Title)
 		return nil
+	case payload.Updated:
+		_, _ = fmt.Fprintln(out, "pull request updated")
 	case payload.Existing:
 		_, _ = fmt.Fprintln(out, "pull request already open")
 	case payload.Draft:
