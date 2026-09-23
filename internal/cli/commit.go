@@ -125,6 +125,22 @@ func resolveMessage(
 	intent string,
 	out io.Writer,
 ) (string, error) {
+	// A supplied message that already declares a type is a statement, not
+	// intent. Rendering it would commit a type other than the one the author
+	// typed, so an unlisted type is refused here — before the provider is
+	// engaged, and whether or not one is configured. Every other kind of
+	// non-conformance still means "this is what I want said, write it
+	// properly", which is the path below.
+	if intent != "" {
+		if verdict := validator.Validate(intent); verdict.TypeNotAllowed {
+			return "", fail(
+				fmt.Sprintf("commit message does not conform to %s: %s", commitStyle, verdict.Reason),
+				fmt.Sprintf("use one of %s, or remove commit.types from your config to accept any type",
+					strings.Join(resolved.Config.Commit.Types, ", ")),
+			)
+		}
+	}
+
 	// The provider is only engaged when a layer actually asked for one. With
 	// the built-in default still in force there is nothing configured to call,
 	// so the offline behaviour stands.

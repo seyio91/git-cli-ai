@@ -1,6 +1,7 @@
 package acceptance
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -74,6 +75,128 @@ func TestCommitTypes_InvalidVocabularyIsRejectedAtLoad(t *testing.T) {
 				t.Errorf("hint = %q, want it to say how to get the open vocabulary back", p.Hint)
 			}
 		})
+	}
+}
+
+// vocabularyRepo is a repo with a staged change, a three-type vocabulary, and
+// a fake provider. The provider is present in every case so that "no provider
+// call" is a real assertion rather than a vacuous one.
+func vocabularyRepo(t *testing.T, generates string) (repo string, log string) {
+	t.Helper()
+
+	repo = newRepo(t)
+	fake, log := writeFakeProvider(t, repo, "fake-provider", generates)
+	writeRepoConfig(t, repo, cliProviderConfig(fake)+"\n[commit]\ntypes = [\"feat\", \"fix\", \"chore\"]\n")
+	writeFile(t, repo, "a.txt", "a\n")
+	mustGit(t, repo, "add", "a.txt")
+	return repo, log
+}
+
+// T3 — a supplied -m that already declares an unlisted type is refused, and
+// refused without a provider call. Rendering it would commit a type other than
+// the one that was typed.
+func TestCommitTypes_SuppliedUnlistedTypeIsRefused(t *testing.T) {
+	repo, log := vocabularyRepo(t, "echo 'feat: rewritten by the model'")
+
+	before := commitCount(t, repo)
+	res := run(t, repo, "commit", "-m", "wip: half done", "--json")
+	if res.exitCode == 0 {
+		t.Fatalf("exit = 0, want an error (stdout %q)", res.stdout)
+	}
+
+	p := res.payload(t)
+	for _, want := range []string{"feat", "fix", "chore"} {
+		if !strings.Contains(p.Hint, want) {
+			t.Errorf("hint = %q, want it to name the allowed type %q", p.Hint, want)
+		}
+	}
+	if !strings.Contains(p.Error, "wip") {
+		t.Errorf("error = %q, want it to name the rejected type", p.Error)
+	}
+	if calls := providerCalls(t, log); calls != 0 {
+		t.Errorf("provider called %d times for a message that was already a statement", calls)
+	}
+	if after := commitCount(t, repo); after != before {
+		t.Errorf("a refused message reached a commit: %s -> %s", before, after)
+	}
+}
+
+// T4 — a listed type still commits verbatim, with no provider call. Without
+// this the test above would pass for a tool that rejected everything.
+func TestCommitTypes_SuppliedListedTypeCommitsVerbatim(t *testing.T) {
+	repo, log := vocabularyRepo(t, "echo 'feat: rewritten by the model'")
+
+	if res := run(t, repo, "commit", "-m", "fix: a real fix", "--json"); res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+	}
+	if got := commitMessage(t, repo); !strings.HasPrefix(got, "fix: a real fix") {
+		t.Errorf("stored message = %q, want it verbatim", got)
+	}
+	if calls := providerCalls(t, log); calls != 0 {
+		t.Errorf("provider called %d times for a conforming message", calls)
+	}
+}
+
+// T5 — the vocabulary must not turn intent into an error. `fixed the thing` is
+// not a conventional commit at all, so it is still text to be written up.
+func TestCommitTypes_FreeformMessageStillRenders(t *testing.T) {
+	repo, log := vocabularyRepo(t, "echo 'fix: correct the thing'")
+
+	if res := run(t, repo, "commit", "-m", "fixed the thing", "--json"); res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+	}
+	if got := commitMessage(t, repo); !strings.HasPrefix(got, "fix: correct the thing") {
+		t.Errorf("stored message = %q, want the rendered message", got)
+	}
+	if calls := providerCalls(t, log); calls != 1 {
+		t.Errorf("provider called %d times, want exactly 1", calls)
+	}
+}
+
+// T6 — a *generated* unlisted type is corrected rather than fatal: the
+// existing one-retry-with-feedback loop carries the rejection back, so no new
+// machinery was needed for the generated path.
+func TestCommitTypes_GeneratedUnlistedTypeIsCorrectedOnRetry(t *testing.T) {
+	repo := newRepo(t)
+	marker := filepath.Join(repo, ".git", "generated-once")
+	fake, log := writeFakeProvider(t, repo, "fake-provider",
+		"if [ -f "+marker+" ]; then echo 'feat: add the thing'; else touch "+marker+"; echo 'ai: add the thing'; fi")
+	writeRepoConfig(t, repo, cliProviderConfig(fake)+"\n[commit]\ntypes = [\"feat\", \"fix\", \"chore\"]\n")
+	writeFile(t, repo, "a.txt", "a\n")
+	mustGit(t, repo, "add", "a.txt")
+
+	if res := run(t, repo, "commit", "--json"); res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+	}
+	if got := commitMessage(t, repo); !strings.HasPrefix(got, "feat: add the thing") {
+		t.Errorf("stored message = %q, want the corrected message", got)
+	}
+	if calls := providerCalls(t, log); calls != 2 {
+		t.Errorf("provider called %d times, want 2 — one rejection and one correction", calls)
+	}
+	if prompts := providerPrompts(t, log); !strings.Contains(prompts, "feat, fix, chore") {
+		t.Error("the prompt never stated the vocabulary, so the model could only learn it by being rejected")
+	}
+}
+
+// T7 — with the vocabulary unset, everything above reverts to today's
+// behaviour: an invented type is accepted, verbatim, with no provider call.
+// This is the guarantee that makes the option opt-in.
+func TestCommitTypes_UnsetVocabularyAcceptsAnInventedType(t *testing.T) {
+	repo := newRepo(t)
+	fake, log := writeFakeProvider(t, repo, "fake-provider", "echo 'feat: rewritten by the model'")
+	writeRepoConfig(t, repo, cliProviderConfig(fake))
+	writeFile(t, repo, "a.txt", "a\n")
+	mustGit(t, repo, "add", "a.txt")
+
+	if res := run(t, repo, "commit", "-m", "wip: half done", "--json"); res.exitCode != 0 {
+		t.Fatalf("exit = %d, want 0 (stdout: %s stderr: %s)", res.exitCode, res.stdout, res.stderr)
+	}
+	if got := commitMessage(t, repo); !strings.HasPrefix(got, "wip: half done") {
+		t.Errorf("stored message = %q, want it verbatim", got)
+	}
+	if calls := providerCalls(t, log); calls != 0 {
+		t.Errorf("provider called %d times for a shape-valid message", calls)
 	}
 }
 
