@@ -5,6 +5,7 @@ package pr
 
 import (
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -55,7 +56,7 @@ func LoadTemplate(path string) (Template, error) {
 // Section boundaries come from the template, not from the substituted text: a
 // value that happens to begin with # is content, not a new heading.
 func (t Template) Render(values map[string]string) string {
-	return render(t.Text, values)
+	return render(t.Text, values, false)
 }
 
 // StripPlaceholders drops any {{placeholder}} left in an already-written body,
@@ -69,16 +70,42 @@ func (t Template) Render(values map[string]string) string {
 // value, so nothing downstream would remove it and `{{testing}}` ships to the
 // reviewer. Asking the model more nicely is not a fix: the body has to be
 // correct whether or not it complies.
+// It also drops a section whose entire content is a denial that there is
+// anything to report. Telling the provider to omit an inapplicable section does
+// not hold on its own: measured against a live generation after the instruction
+// was made explicit, the model still answered "None." under both headings it had
+// nothing for. Such a section is content by every structural measure, so the
+// heading survives and the reviewer reads two words that say nothing.
 func StripPlaceholders(body string) string {
-	return render(body, nil)
+	return render(body, nil, true)
 }
 
-func render(text string, values map[string]string) string {
+// denial matches a whole line that reports an absence. The bounded word count
+// and the lack of a list marker in the pattern are what keep it from eating real
+// content: a genuine change line can open with "no" ("- no longer reads the env
+// var"), but it carries a marker, and an unmarked three-word line under its own
+// heading is not telling a reviewer anything.
+var denial = regexp.MustCompile(`(?i)^(none|n/?a|nothing|not applicable|no\s+\S+(\s+\S+){0,2})\.?$`)
+
+// hollow reports whether a section's body, excluding its heading, says only that
+// there is nothing to report. Only a lone line qualifies — a section with two or
+// more lines is carrying something.
+func hollow(section []string) bool {
+	var content []string
+	for _, line := range section[1:] {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			content = append(content, trimmed)
+		}
+	}
+	return len(content) == 1 && denial.MatchString(content[0])
+}
+
+func render(text string, values map[string]string, dropHollow bool) string {
 	var out, section []string
 	inSection, hasContent, fenced := false, false, false
 
 	flush := func() {
-		if inSection && hasContent {
+		if inSection && hasContent && !(dropHollow && hollow(section)) {
 			out = append(out, section...)
 		}
 		section, hasContent = nil, false

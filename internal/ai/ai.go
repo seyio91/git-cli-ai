@@ -73,16 +73,19 @@ Reply with the message itself and nothing else: no preamble, no commentary, no
 code fences.`
 
 const prBodyPreamble = `Write the pull request body for the change described below, filling in the
-template that follows. Keep its headings and their order, replace every
-{{placeholder}} with real content, and leave a placeholder's section empty when
-nothing is known about it rather than inventing something.
+template that follows. Reproduce its headings verbatim, including the leading
+"##" markers, and keep them in order. Replace every {{placeholder}} with real
+content. When a section does not apply, omit its heading together with its
+content: do not keep the heading and write "None", "N/A", or a sentence saying
+there is nothing to report.
 Be brief. A reviewer needs what changed and why, not a design document: aim for
 a few sentences or a short list per section. Do not restate what the diff
 already shows, and do not add headings the template did not ask for.
 Write the way the repository's own history reads. State each point once and do
 not add a closing line that restates it. Say things directly instead of framing
 them as "not just X but Y". Give a bullet its content, not a bolded label and a
-colon. No emoji, no decorative headings, no horizontal rules. Avoid the words
+colon. Keep decoration out of the headings you were given: no emoji, no title
+case, no arrows, and no horizontal rules between sections. Avoid the words
 models reach for and engineers do not: comprehensive, robust, crucial, key,
 seamless, leverage, enhance, underscore, significantly, streamline. Do not
 inflate what the change is — a fix is a fix, not a critical improvement that
