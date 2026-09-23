@@ -229,7 +229,7 @@ func (g GH) run(ctx context.Context, stdin string, args ...string) (string, erro
 		}
 		return "", &Error{
 			Message: fmt.Sprintf("gh %s failed", label(args)),
-			Hint:    ghHint(err, stderr.String()),
+			Hint:    ghHint(err, stderr.String(), label(args)),
 			Details: strings.TrimSpace(stderr.String()),
 		}
 	}
@@ -246,7 +246,11 @@ func label(args []string) string {
 	return strings.Join(args, " ")
 }
 
-func ghHint(err error, stderr string) string {
+// ghHint turns a gh failure into something actionable. operation is the
+// subcommand that failed, from label: the permission branch used to say
+// "cannot open a pull request" whatever had run, which sent anyone hitting a
+// 403 on an edit looking for the wrong permission.
+func ghHint(err error, stderr string, operation string) string {
 	lowered := strings.ToLower(stderr)
 
 	switch {
@@ -257,7 +261,7 @@ func ghHint(err error, stderr string) string {
 	case strings.Contains(lowered, "could not determine"), strings.Contains(lowered, "no git remotes"):
 		return "run this inside a repository with a GitHub remote, or add one with `git remote add origin <url>`"
 	case strings.Contains(lowered, "permission"), strings.Contains(lowered, "403"):
-		return "the authenticated account cannot open a pull request on this repository; check its permissions"
+		return "the authenticated account cannot run `gh " + operation + "` on this repository; check its permissions"
 	}
 
 	return "run the same gh command manually to see its full output"

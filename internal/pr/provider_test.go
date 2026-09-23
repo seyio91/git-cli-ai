@@ -100,6 +100,21 @@ func TestUpdatePRWithNothingSetMakesNoCall(t *testing.T) {
 	}
 }
 
+// A 403 has to name the operation that was refused. The hint used to say
+// "cannot open a pull request" no matter what had run, which on an edit points
+// at a permission that is not the one missing.
+func TestGHHintNamesTheOperationThatWasRefused(t *testing.T) {
+	for _, tc := range []struct{ operation, want string }{
+		{"pr edit", "gh pr edit"},
+		{"pr create", "gh pr create"},
+	} {
+		hint := ghHint(nil, "HTTP 403: Resource not accessible by integration", tc.operation)
+		if !strings.Contains(hint, tc.want) {
+			t.Errorf("hint for %q = %q, want it to name %q", tc.operation, hint, tc.want)
+		}
+	}
+}
+
 // The never-merge invariant, asserted against the interface itself rather than
 // against a comment. Adding UpdatePR is the closest this interface has come to
 // acting on a pull request, which is exactly when this is worth pinning down.
