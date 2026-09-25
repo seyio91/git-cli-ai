@@ -83,6 +83,10 @@ document. Keep the whole body under roughly 200 words: a few sentences or a
 short list per section, and a bullet that runs to one or two lines. Do not
 restate what the diff already shows, and do not add headings the template did
 not ask for.
+Do not quote code from the diff. Describe a change in words and name the file,
+resource, or key it touches; never copy an expression, a value, or a block's
+arguments into the body. Include a snippet only when the explanation cannot be
+followed without one.
 Prefer fact over interpretation. Name what changed and where. Leave out
 reasoning the diff already carries, implications the reader can draw for
 themselves, caveats nobody asked for, and any paragraph that opens by telling
